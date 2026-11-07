@@ -83,7 +83,9 @@ _PREDICATE_DEFAULTS = {
 }
 
 
-def _render_source(entry: dict, actor: str) -> None:
+def _render_source(entry: dict, actor: str, role_value: str | None = None) -> None:
+    if role_value is None:
+        role_value = actor
     if not entry.get("source_quote"):
         st.warning("No exact source quotation is attached. This rule cannot be approved.")
         return
@@ -177,7 +179,7 @@ def render(role: UserRole | str | None = None) -> None:
                 + (f" · market {entry['market']}" if entry.get("market") else "")
             )
             st.write(entry["content"])
-            _render_source(entry, role_value)
+            _render_source(entry, actor="reviewer_demo", role_value=role_value)
             for warning in entry.get("warnings", []):
                 st.warning(warning)
             st.caption(f"Current method: {entry.get('rule_checking_method') or 'Not classified'}")

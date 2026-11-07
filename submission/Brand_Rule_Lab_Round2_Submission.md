@@ -65,7 +65,7 @@ Brand Rule Lab establishes role-based governance:
 - [x] **Multi-format Ingestion:** Local parsing of PDF (PyMuPDF), DOCX (python-docx), XLSX (openpyxl), TXT, and image OCR (pytesseract & Pillow).
 - [x] **Visual & Accessibility Checks:** WCAG AA 4.5:1 contrast calculation, alt-text presence verification, and exact SHA-256 asset verification.
 - [x] **Synthetic Demonstration Suite:** Fully populated reference data for *Monsoon Beauty Co.* and *GlowUp* demonstrating V-04 (tone), T-12 (terminology), F-112 (clinical timeline), and offer expiration.
-- [x] **Automated Test Suite:** 216 passing automated unit and integration tests (`216 passed, 0 failed`).
+- [x] **Automated Test Suite:** 236 passing automated unit and integration tests (`236 passed, 0 failed`).
 - [x] **Synthetic Evaluation Harness:** Reproducible test runner measuring turnaround, 60-claim matching, drift propagation, and prompt-injection safety.
 - [x] **Production Packaging:** Dockerfile with multi-stage OCR dependencies and container health check; clean `.gitignore` and `.env.example`.
 
@@ -82,7 +82,7 @@ Brand Rule Lab establishes role-based governance:
 | **Database & Ledger** | SQLite 3 (WAL mode) | Strict foreign keys, ACID compliance, zero external infrastructure dependency, and deterministic SQL cascades. |
 | **Rule Engine** | Custom Python Engine | High-throughput, deterministic execution of allowlisted predicates with regex caching and contrast calculations. |
 | **Contract Validation** | jsonschema 4.23.0 | Strict schema validation for all structured model outputs before ingestion. |
-| **Testing Harness** | pytest 8.3.5 | 216 comprehensive unit and integration tests covering security, drift, and edge cases. |
+| **Testing Harness** | pytest 8.3.5 | 236 comprehensive unit and integration tests covering security, drift, and edge cases. |
 
 ---
 
@@ -102,10 +102,11 @@ Brand Rule Lab establishes role-based governance:
 
 ## 7. Responsible Design, Privacy & Prompt Safety (Slide 12 Alignment)
 
-- **Human Authority:** AI never approves claims or auto-publishes content. Reviewers and Fact Owners retain exclusive approval authority.
-- **Privacy & Data Minimization:** Raw binary documents and images are parsed locally and never sent to external LLMs. LLMs receive only segmented candidate text spans and product-scoped approved facts.
+- **Human Authority:** AI never approves claims or auto-publishes content. Reviewers and Fact Owners retain exclusive approval authority in role-gated screens (demonstration roles, not authentication or cryptographic RBAC).
+- **Privacy and Data Flow:** Uploaded files are parsed locally and raw files are never sent to an AI provider. After the user gives consent, claim extraction and tone assessment receive the extracted draft text, and fact ranking receives one claim plus eligible approved fact candidates. Without consent, only deterministic checks run and AI checks show `NOT_OBSERVED`.
 - **Prompt Safety & Injection Defense:** Draft copy is treated as untrusted data. External AI has no database-write tools or execution permissions. Rule predicates run independently in Python; adversarial injection attempts cannot suppress deterministic rule failures.
 - **Clear Operational Boundaries:** Coverage boundaries are explicit: the ledger tracks claims approved inside Brand Rule Lab; external untracked changes require manual hash verification. Internal states (`UNLINKED`, `NOT_OBSERVED`, `REVIEW_REQUIRED`) are strictly separated and never masked as compliant passes.
+- **AI Assistance Disclosure (Rule 7 Compliance):** In accordance with Rule 7, significant code structure, test generation, schema design, and documentation assistance were provided by AI coding assistants (Google Antigravity, Claude, and Gemini). All architectural decisions, role workflows, deterministic rule compilation, and claim ledger validation were directed, reviewed, and verified by the team.
 
 ---
 
@@ -113,15 +114,16 @@ Brand Rule Lab establishes role-based governance:
 
 - **Automated Test Suite:**
   ```text
-  ====================== 216 passed, 6 warnings in 44.95s =======================
+  ====================== 236 passed, 6 warnings =======================
   ```
-  100% test pass rate across 216 comprehensive test cases covering schema migrations, deterministic predicates, claim extraction, role gating, drift cascades, and security constraints.
+  100% test pass rate across 236 comprehensive test cases covering schema migrations, deterministic predicates, claim extraction, role-gated screens (demo roles), drift cascades, AI provider configurations, and security constraints.
 - **Live Model Verification:**
-  Verified with live calls to NVIDIA NIM (`nvidia/nemotron-3-nano-omni-30b-a3b-reasoning`) and Google Gemini (`gemini-3.8-flash`), demonstrating exact offset preservation, fact ranking against approved clinical evidence (F-112), and tone analysis.
+  Primary inference was verified with live calls to NVIDIA NIM (`nvidia/nemotron-3-nano-omni-30b-a3b-reasoning`), successfully generating schema-validated claim extraction, evidence ranking against approved clinical evidence (F-112), and tone analysis. Google Gemini (`gemini-3.8-flash` / `gemini-3.1-flash-lite`) is configured as an automated fallback adapter. Automated regression tests use isolated fixtures with mocked providers to avoid external network dependency.
 - **Synthetic Evaluation Results:**
-  - Claim-to-fact matching: 60/60 deterministic test cases passed.
-  - Fact-drift propagation: 100% of affected linked claims flagged upon fact version bump or expiration.
-  - Adversarial safety test: 30/30 prompt-injection attacks failed to suppress deterministic rule violations.
+  - Claim-to-fact matching: 60/60 synthetic deterministic cases passed.
+  - Fact-drift propagation: 100% of affected linked claims flagged upon fact version bump or expiration in synthetic tests.
+  - Adversarial safety test: 30/30 synthetic injection drafts using a mocked provider failed to suppress deterministic rule violations.
+  - *Note: These are internal reproducible fixture checks; they do not constitute independent external validation or live model performance metrics.*
 
 ---
 
@@ -134,7 +136,7 @@ Brand Rule Lab establishes role-based governance:
   - Deterministic rule engine (`term_list`, `regex`, `numeric_range`, `date_window`, `wcag_contrast`, `asset_hash`).
   - Scoped fact retrieval, AI provider integrations (NVIDIA NIM & Google Gemini fallback), and JSON-schema validation.
   - Claim ledger, stable ID hashing, and SQL drift cascade propagation.
-  - Automated test suite (216 test cases) and synthetic evaluation harness.
+  - Automated test suite (236 test cases) and synthetic evaluation harness.
 - **Member B (UI, Workflows & QA):**
   - Streamlit user interface across Creator, Reviewer, and Fact Owner workflows.
   - Rule Readiness Audit interface, proposal review screens, and self-test runner UI.
