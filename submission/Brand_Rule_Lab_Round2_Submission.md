@@ -39,13 +39,13 @@ Brand Rule Lab establishes role-based governance:
 
 1. **Brand Knowledge Onboarding:** Upload brand manuals, clinical studies, and product specification sheets (PDF, DOCX, TXT, XLSX, PNG, JPEG). Files are parsed locally (with Tesseract OCR when needed). AI extraction proposes source-quoted facts and guidelines with strict page/document provenance.
 2. **Rule Readiness Gate:** Reviewers audit rule proposals into four distinct readiness classes:
-   - `CODE_CHECKABLE`: strictly verified against a whitelisted predicate (`term_list`, `regex`, `numeric_range`, `date_window`, `required_text`, `wcag_contrast`, `asset_hash`) with mandatory positive/negative self-tests. Only passing, human-approved rules enter the active `brand_rules` engine.
+   - `CODE_CHECKABLE`: strictly verified against a whitelisted predicate (`term_list`, `regex`, `numeric_range`, `date_window`, `required_text`, `wcag_contrast`, `asset_hash`, `logo_phash`) with mandatory positive/negative self-tests. Only passing, human-approved rules enter the active `brand_rules` engine.
    - `AI_ASSISTED`: advisory contextual guidance; never silently converted into blocking code predicates.
    - `HUMAN_JUDGEMENT`: subjective matters (e.g., brand aesthetics) routed directly to human reviewers.
    - `UNCLEAR`: marked for clarification; blocked from enforcement until resolved.
 3. **Draft Intake:** Creator submits copy or uploads documents/creatives, selecting product, target market (e.g., `IN`), channel (e.g., `instagram`), and optional campaign brief.
 4. **Hybrid Check Pipeline:**
-   - **Python Deterministic Predicates:** evaluate terminology, regex constraints, date windows, required statements, image SHA-256 match, and WCAG AA 4.5:1 text contrast.
+   - **Python Deterministic Predicates:** evaluate terminology, regex constraints, date windows, required statements, image SHA-256 and pre-cropped-image pHash comparisons, and WCAG AA 4.5:1 text contrast. pHash does not locate a logo inside a full ad.
    - **Source-Preserved Claim Extraction:** Python parses sentences and clause spans with exact character offsets. External AI selects candidate IDs without inventing spans or offsets.
    - **Scoped Fact Retrieval & Evidence Ranking:** SQLite filters approved facts strictly by product and market. The AI ranks claims against candidates, classifying relationships into `SUPPORTS`, `CONTRADICTS`, `RELATED_NOT_EVIDENCE`, or `NO_MATCH`.
    - **Advisory Tone & Campaign Alignment:** evaluates tone against voice guidelines (e.g., V-04 calm/credible tone vs. absolute promises) and campaign briefs.
@@ -58,17 +58,17 @@ Brand Rule Lab establishes role-based governance:
 
 ## 4. Completed Features (Round 2 Deliverables)
 
-- [x] **Deterministic Python Rule Engine:** Pure Python evaluation for `term_list` (banned/allowed terms), `regex`, `numeric_range`, `date_window`, `required_text`, `asset_hash`, and `wcag_contrast`.
-- [x] **Rule Readiness Audit System:** Classification, source quote extraction, predicate compilation, automated positive/negative self-test harness, and SQLite history tracking.
+- [x] **Deterministic Python Rule Engine:** Pure Python evaluation for `term_list` (banned/allowed terms), `regex`, `numeric_range`, `date_window`, `required_text`, `asset_hash`, `logo_phash`, and `wcag_contrast`.
+- [x] **Rule Readiness Audit System:** Classification, source quote extraction, predicate compilation, automated positive/negative self-test harness, SQLite history tracking, and a read-only Rule Tests page for active approved rules.
 - [x] **AI-Assisted Claim Extraction & Ranking:** Candidate offset preservation, product/market SQL isolation, JSON-schema validation, and explicit `NOT_OBSERVED` handling.
 - [x] **Dual AI Provider Architecture:** Primary NVIDIA NIM (`nemotron-3-nano-omni-30b-a3b-reasoning`) with automatic graceful fallback to Google Gemini (`gemini-3.8-flash`) and offline resilience.
 - [x] **Verifiable Claim Ledger:** `stable_claim_id` minting, immutable text hashes, fact-version lineage tracking, and atomic SQL drift cascade.
 - [x] **Role-Based Workflows:** Separate Creator, Reviewer, and Fact Owner interfaces in Streamlit with immutable audit logging.
 - [x] **Judge-Friendly First-Use Flow:** Overview leads with a guided synthetic review; optional brand setup is clearly separated from the core content-review workflow.
 - [x] **Multi-format Ingestion:** Local parsing of PDF (PyMuPDF), DOCX (python-docx), XLSX (openpyxl), TXT, and image OCR (pytesseract & Pillow).
-- [x] **Visual & Accessibility Checks:** WCAG AA 4.5:1 contrast calculation, alt-text presence verification, and exact SHA-256 asset verification.
-- [x] **Synthetic Demonstration Suite:** Fully populated reference data for *Monsoon Beauty Co.* and *GlowUp* demonstrating V-04 (tone), T-12 (terminology), F-112 (clinical timeline), and offer expiration.
-- [x] **Automated Test Suite:** 237 passing automated unit and integration tests (`237 passed, 0 failed`).
+- [x] **Visual & Accessibility Checks:** WCAG AA 4.5:1 contrast calculation, alt-text presence verification, exact SHA-256 asset verification, and pHash comparison of pre-cropped images (no logo localization inside full ads).
+- [x] **Synthetic Demonstration Suite:** Fully populated reference data for *Monsoon Beauty Co.* and *GlowUp* demonstrating V-04 (tone), T-12 (terminology), F-112 (clinical timeline), and D-02 fixed-date active/expired offer examples.
+- [x] **Automated Test Suite:** 245 passing automated unit and integration tests (`245 passed, 0 failed`).
 - [x] **Synthetic Evaluation Harness:** Reproducible internal fixture runner for 60 claim-to-fact relationships, drift propagation, and prompt-injection safety. AI top-3 accuracy and a user turnaround study have not been measured.
 - [x] **Production Packaging:** Dockerfile with multi-stage OCR dependencies and container health check; clean `.gitignore` and `.env.example`.
 
@@ -83,9 +83,9 @@ Brand Rule Lab establishes role-based governance:
 | **Fallback AI Provider** | Google Gemini (google-genai 2.34.0) | Automated fallback on network/quota failure to `gemini-3.8-flash` / `gemini-3.1-flash-lite`. |
 | **Local Parsing & OCR** | PyMuPDF, python-docx, openpyxl, pytesseract | Local extraction of documents and image OCR without transmitting binary files to cloud LLMs. |
 | **Database & Ledger** | SQLite 3 (WAL mode) | Strict foreign keys, ACID compliance, zero external infrastructure dependency, and deterministic SQL cascades. |
-| **Rule Engine** | Custom Python Engine | High-throughput, deterministic execution of allowlisted predicates with regex caching and contrast calculations. |
+| **Rule Engine** | Custom Python Engine | Deterministic execution of allowlisted predicates, including pre-cropped-image pHash comparison, regex checks, and contrast calculations. |
 | **Contract Validation** | jsonschema 4.23.0 | Strict schema validation for all structured model outputs before ingestion. |
-| **Testing Harness** | pytest 8.3.5 | 237 comprehensive unit and integration tests covering security, drift, and edge cases. |
+| **Testing Harness** | pytest 8.3.5 | 245 unit and integration tests covering security, drift, and edge cases. |
 
 ---
 
@@ -118,9 +118,9 @@ Brand Rule Lab establishes role-based governance:
 
 - **Automated Test Suite:**
   ```text
-  ====================== 237 passed, 6 warnings =======================
+  ====================== 245 passed, 6 warnings =======================
   ```
-  100% test pass rate across 237 comprehensive test cases covering schema migrations, deterministic predicates, claim extraction, role-gated screens (demo roles), drift cascades, AI provider configurations, security constraints, and the OCR-banner-to-claim-review path.
+  100% test pass rate across 245 test cases covering schema migrations, deterministic predicates, claim extraction, role-gated screens (demo roles), drift cascades, AI provider configurations, security constraints, and the OCR-banner-to-claim-review path.
 - **Image OCR smoke test:** A disposable PNG with banner text was processed by local Tesseract; the extracted claim appeared in the claim-extraction request and was persisted in the review. The provider was mocked, and the test used a temporary database with no external AI request.
 - **Live Model Verification:**
   Primary inference was verified with live calls to NVIDIA NIM (`nvidia/nemotron-3-nano-omni-30b-a3b-reasoning`), successfully generating schema-validated claim extraction, evidence ranking against approved clinical evidence (F-112), and tone analysis. Google Gemini (`gemini-3.8-flash` / `gemini-3.1-flash-lite`) is configured as an automated fallback adapter. Automated regression tests use isolated fixtures with mocked providers to avoid external network dependency.
@@ -140,10 +140,10 @@ Brand Rule Lab establishes role-based governance:
 - **Team Leader:** Rohit Longesha
 - **Member A (Backend & Logic — Rohit Longesha):**
   - Architecture and SQLite schema with WAL mode and migration sequence.
-  - Deterministic rule engine (`term_list`, `regex`, `numeric_range`, `date_window`, `wcag_contrast`, `asset_hash`).
+  - Deterministic rule engine (`term_list`, `regex`, `numeric_range`, `date_window`, `wcag_contrast`, `asset_hash`, `logo_phash`).
   - Scoped fact retrieval, AI provider integrations (NVIDIA NIM & Google Gemini fallback), and JSON-schema validation.
   - Claim ledger, stable ID hashing, and SQL drift cascade propagation.
-  - Automated test suite (237 test cases) and synthetic evaluation harness.
+  - Automated test suite (245 test cases) and synthetic evaluation harness.
 - **Member B — Himanshu (UI, Workflows & QA):**
   - Streamlit user interface across Creator, Reviewer, and Fact Owner workflows.
   - Rule Readiness Audit interface, proposal review screens, and self-test runner UI.

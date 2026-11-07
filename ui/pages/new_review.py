@@ -164,6 +164,7 @@ def render():
     parsed_result: dict | None = None
     parse_error: str | None = None
     uploaded_hash: str | None = None
+    uploaded_image_bytes: bytes | None = None
     uploaded_is_image = False
 
     if "Paste text" in input_method:
@@ -192,6 +193,7 @@ def render():
                     uploaded_is_image = parsed_result["source_type"] == "image"
                     if uploaded_is_image:
                         uploaded_hash = hashlib.sha256(data).hexdigest()
+                        uploaded_image_bytes = data
                     st.success(
                         f"✅ Extracted {parsed_result['word_count']} words from {parsed_result['source_type'].upper()} file."
                     )
@@ -254,6 +256,7 @@ def render():
                 visual_meta["asset_id"] = selected_asset_id
             if uploaded_is_image and uploaded_hash:
                 visual_meta["submitted_hash"] = uploaded_hash
+                visual_meta["submitted_image_bytes"] = uploaded_image_bytes
         if parsed_result and parsed_result.get("unobserved_pages"):
             visual_meta["unobserved_pages"] = parsed_result["unobserved_pages"]
             st.warning(

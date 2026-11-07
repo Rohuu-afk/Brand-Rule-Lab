@@ -16,17 +16,17 @@ PAGE_GROUPS = {
     UserRole.CREATOR: {
         "Workspace": ["Overview", "Brand Knowledge", "Brand Guidelines", "Products & Facts", "Brand Assets"],
         "Content Review": ["New Review", "Review Results", "Review History"],
-        "Governance": ["Claim Ledger", "Insights"],
+        "Governance": ["Claim Ledger", "Rule Tests", "Insights"],
     },
     UserRole.REVIEWER: {
         "Workspace": ["Overview", "Brand Knowledge", "Brand Guidelines", "Products & Facts", "Brand Assets"],
         "Content Review": ["Review Results", "Review History"],
-        "Governance": ["Claim Ledger", "Draft Approvals", "Rule Readiness", "Insights"],
+        "Governance": ["Claim Ledger", "Draft Approvals", "Rule Readiness", "Rule Tests", "Insights"],
     },
     UserRole.FACT_OWNER: {
         "Workspace": ["Overview", "Brand Knowledge", "Brand Guidelines", "Products & Facts", "Brand Assets"],
         "Content Review": ["Review History"],
-        "Governance": ["Claim Ledger", "Fact Approvals", "Insights"],
+        "Governance": ["Claim Ledger", "Fact Approvals", "Rule Tests", "Insights"],
     },
 }
 
@@ -49,6 +49,7 @@ PAGE_MODULE = {
     "Review History": "ui.pages.ledger",
     "Draft Approvals": "ui.pages.approval_queue",
     "Rule Readiness": "ui.pages.rule_readiness",
+    "Rule Tests": "ui.pages.rule_tests",
     "Fact Approvals": "ui.pages.fact_approvals",
     "Insights": "ui.pages.insights",
     # Backward compatibility mappings

@@ -37,6 +37,7 @@ Visual & Accessibility baseline notes:
 from __future__ import annotations
 
 import hashlib
+import io
 import json
 import re
 import contextvars
@@ -606,6 +607,59 @@ def _check_asset_hash(text: str, params: dict) -> RuleExecutionResult:
         return RuleExecutionResult(FindingResult.ERROR, f"Unknown hash_type: {hash_type!r}")
 
 
+def _check_logo_phash(text: str, params: dict) -> RuleExecutionResult:
+    """Compare a pre-cropped submitted image with an approved perceptual hash."""
+    submitted_image = params.get("submitted_image_bytes")
+    submitted_hash = params.get("submitted_phash")
+    approved_hash = params.get("approved_phash")
+    if not approved_hash or (not submitted_image and not submitted_hash):
+        return RuleExecutionResult(
+            FindingResult.NOT_OBSERVED,
+            "Submitted image or approved perceptual hash is missing; comparison was not performed.",
+        )
+
+    try:
+        import imagehash
+
+        if submitted_image:
+            from PIL import Image
+
+            with Image.open(io.BytesIO(bytes(submitted_image))) as image:
+                image.load()
+                submitted_hash = str(imagehash.phash(image))
+        submitted_value = int(str(submitted_hash), 16)
+        approved_value = int(str(approved_hash), 16)
+        threshold = params.get("max_hamming_distance", 10)
+        if isinstance(threshold, bool) or not isinstance(threshold, int) or threshold < 0:
+            return RuleExecutionResult(
+                FindingResult.ERROR,
+                "max_hamming_distance must be a non-negative integer.",
+            )
+        distance = (submitted_value ^ approved_value).bit_count()
+    except (OSError, ValueError, TypeError, SyntaxError):
+        return RuleExecutionResult(
+            FindingResult.NOT_OBSERVED,
+            "Submitted image or perceptual hash is unreadable; comparison was not performed.",
+        )
+
+    limitation = (
+        " This compares a pre-cropped logo/image against the approved one; "
+        "it does not locate a logo inside a full ad."
+    )
+    if distance <= threshold:
+        return RuleExecutionResult(
+            FindingResult.PASS,
+            f"Perceptual hash distance {distance} is within threshold {threshold}.{limitation}",
+        )
+    return RuleExecutionResult(
+        FindingResult.FAIL,
+        f"Perceptual hash distance {distance} exceeds threshold {threshold}; "
+        f"the image looks different from the approved asset.{limitation}",
+        offending_text=f"Perceptual distance: {distance}",
+        suggested_correction="Use or verify a pre-cropped image matching the approved asset.",
+    )
+
+
 def _check_alt_text(text: str, params: dict) -> RuleExecutionResult:
     """
     Accessibility baseline: checks whether image assets include descriptive alt-text.
@@ -662,6 +716,7 @@ _PREDICATES: dict[str, PredicateFn] = {
     RuleType.REQUIRED_TEXT:  _check_required_text,
     RuleType.WCAG_CONTRAST:  _check_wcag_contrast,
     RuleType.ASSET_HASH:     _check_asset_hash,
+    RuleType.LOGO_PHASH:     _check_logo_phash,
     "alt_text":              _check_alt_text,
 }
 
@@ -757,6 +812,8 @@ def run_self_tests(rule_row: dict) -> list[dict]:
             params.update({"foreground": colors[0].strip(), "background": colors[1].strip()})
         elif candidate.get("rule_type") == RuleType.ASSET_HASH.value:
             params["submitted_hash"] = test_text.strip()
+        elif candidate.get("rule_type") == RuleType.LOGO_PHASH.value:
+            params["submitted_phash"] = test_text.strip()
         elif candidate.get("rule_type") == "alt_text":
             params["alt_text"] = test_text
         candidate["parameters"] = params

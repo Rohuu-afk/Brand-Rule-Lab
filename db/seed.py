@@ -138,6 +138,15 @@ GUIDELINES = [
             "All timeline claims must reflect the verified four-week clinical timeframe."
         ),
     },
+    {
+        "product_id_index": 3,
+        "title": "[D-02] Monsoon Offer Date Policy",
+        "source_ref": "Fictional Offer Register D-02",
+        "content": (
+            "[DEMO GUIDELINE] Offer dates must match the approved fictional "
+            "Monsoon offer window recorded for this demonstration."
+        ),
+    },
 ]
 
 BRAND_RULES = [
@@ -376,6 +385,31 @@ BRAND_RULES = [
         "is_active": 1,
         "owner_approved": 1,
     },
+    # Rule 11 — D-02 Monsoon offer date window
+    {
+        "product_id_index": 3,
+        "guideline_id_index": 6,
+        "name": "D-02: Monsoon Offer Date Window",
+        "description": "Check that a fictional Monsoon offer date falls within the approved demo date window.",
+        "rule_type": "date_window",
+        "scope": json.dumps({"channel": ["all"], "market": ["IN", "US", "GB"]}),
+        "parameters": json.dumps({
+            "extract_pattern": r"(?i)\boffer\s+valid through\s+(\d{4}-\d{2}-\d{2})",
+            "date_format": "%Y-%m-%d",
+            "earliest": "2099-01-01",
+            "latest": "2099-12-31",
+            "suggested_correction": "Use the approved fictional Monsoon offer date.",
+        }),
+        "severity": "MEDIUM",
+        "positive_tests": json.dumps([
+            "Monsoon offer valid through 2099-12-31."
+        ]),
+        "negative_tests": json.dumps([
+            "Monsoon offer valid through 2000-01-01."
+        ]),
+        "is_active": 1,
+        "owner_approved": 1,
+    },
 ]
 
 FACTS = [
@@ -419,6 +453,18 @@ FACTS = [
         "product_id_index": 3,
         "name": "F-112: Clear Skin Clinical Trial Timeline",
         "category": "efficacy_claim",
+        "markets": json.dumps(["IN", "US", "GB"]),
+    },
+    {
+        "product_id_index": 3,
+        "name": "[DEMO] Monsoon Expired Offer Date",
+        "category": "promotion",
+        "markets": json.dumps(["IN", "US", "GB"]),
+    },
+    {
+        "product_id_index": 3,
+        "name": "[DEMO] Monsoon Active Offer Date",
+        "category": "promotion",
         "markets": json.dumps(["IN", "US", "GB"]),
     },
 ]
@@ -489,6 +535,28 @@ FACT_VERSIONS = [
             "and excess sebum in 4 weeks of twice-daily use."
         ),
         "evidence_ref": "Clinical Study MS-2024-F112 (n=150, 4 weeks)",
+        "approval_status": "APPROVED",
+        "approved_by": "demo_fact_owner",
+    },
+    {
+        "fact_index": 6,
+        "version_number": 1,
+        "statement": (
+            "[DEMO] Fictional Monsoon offer expired on 2000-01-01; "
+            "this date is fixed for deterministic test coverage."
+        ),
+        "evidence_ref": "Fictional Offer Register D-02 — expired example",
+        "approval_status": "APPROVED",
+        "approved_by": "demo_fact_owner",
+    },
+    {
+        "fact_index": 7,
+        "version_number": 1,
+        "statement": (
+            "[DEMO] Fictional Monsoon offer is active through 2099-12-31; "
+            "this date is fixed for deterministic test coverage."
+        ),
+        "evidence_ref": "Fictional Offer Register D-02 — active example",
         "approval_status": "APPROVED",
         "approved_by": "demo_fact_owner",
     },

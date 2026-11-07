@@ -80,6 +80,14 @@ _PREDICATE_DEFAULTS = {
         "positive": ["0" * 64],
         "negative": ["1" * 64],
     },
+    "logo_phash": {
+        "parameters": {
+            "approved_phash": "0" * 16,
+            "max_hamming_distance": 10,
+        },
+        "positive": ["0" * 16],
+        "negative": ["f" * 16],
+    },
 }
 
 

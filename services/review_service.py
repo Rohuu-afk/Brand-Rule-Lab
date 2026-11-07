@@ -887,6 +887,7 @@ def run_review(
             ).fetchone()
         content_type = draft_scope["content_type"] if draft_scope else None
     asset_check: dict[str, Any] | None = None
+    asset_phash_check: dict[str, Any] | None = None
     asset_id = visual_metadata.get("asset_id")
     if source_type == "image":
         if asset_id is None:
@@ -931,6 +932,25 @@ def run_review(
                         f"Image-to-image exact SHA-256 comparison: {asset_result.explanation}"
                     ),
                     "suggested_correction": asset_result.suggested_correction,
+                }
+                phash_result = run_rule(
+                    {
+                        "rule_type": "logo_phash",
+                        "is_active": 1,
+                        "owner_approved": 1,
+                        "parameters": {
+                            "submitted_image_bytes": visual_metadata.get("submitted_image_bytes"),
+                            "approved_phash": approved_asset.get("perceptual_hash"),
+                            "max_hamming_distance": 10,
+                        },
+                    },
+                    "",
+                    regex_budget=regex_budget,
+                )
+                asset_phash_check = {
+                    "result": phash_result.result.value,
+                    "explanation": phash_result.explanation,
+                    "suggested_correction": phash_result.suggested_correction,
                 }
     elif asset_id is not None:
         asset_check = {
@@ -1389,6 +1409,21 @@ def run_review(
             "quoted_text": "",
             "explanation": asset_check["explanation"],
             "suggested_correction": asset_check["suggested_correction"],
+        })
+
+    if asset_phash_check:
+        all_findings.append({
+            "draft_version_id": draft_version_id,
+            "claim_mention_id": None,
+            "rule_id": None,
+            "fact_version_id": None,
+            "finding_type": "asset_perceptual_identity",
+            "result": asset_phash_check["result"],
+            "status": FindingStatus.OPEN.value,
+            "severity": Severity.LOW.value,
+            "quoted_text": "",
+            "explanation": asset_phash_check["explanation"],
+            "suggested_correction": asset_phash_check["suggested_correction"],
         })
 
     # Run rules against full text first

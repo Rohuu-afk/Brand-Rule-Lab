@@ -102,6 +102,7 @@ class RuleType(str, Enum):
     REQUIRED_TEXT = "required_text"
     WCAG_CONTRAST = "wcag_contrast"
     ASSET_HASH = "asset_hash"
+    LOGO_PHASH = "logo_phash"
 
 
 class Severity(str, Enum):
