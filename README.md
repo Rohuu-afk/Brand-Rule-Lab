@@ -6,6 +6,8 @@
 
 Brand Rule Lab is an intelligent brand-governance platform that reviews content before publication and checks it against approved guidelines, facts, and assets. It catches off-brand tone, wrong terminology, unsupported claims, and inaccessible visuals before publishing, explains every finding, preserves creator intent, and keeps every approved claim cryptographically tied to the exact fact version that supports it.
 
+📄 **[Brand Rule Lab Product Architecture & Walkthrough PDF](Brand_Rule_Lab_Walkthrough.pdf)** — Visual walkthrough styled with the platform's design system explaining the end-to-end workflow, claim ledger, Rule Readiness audit, live checks, and technical architecture.
+
 ---
 
 ## 1. Architecture & Technology Disclosures
