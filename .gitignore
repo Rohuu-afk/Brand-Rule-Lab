@@ -1,0 +1,75 @@
+# Secrets — never commit
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+*.p12
+*.pfx
+
+# Python
+__pycache__/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+*.py[cod]
+*.pyo
+.Python
+env/
+venv/
+.venv/
+*.egg-info/
+dist/
+build/
+*.log
+*.tmp
+*.temp
+*.bak
+*-wal
+*-shm
+*-journal
+~$*
+tmp/
+temp/
+.coverage
+htmlcov/
+
+# Local databases, SQLite sidecars, and private uploads
+*.db
+*.db-*
+*.sqlite
+*.sqlite-*
+*.sqlite3
+*.sqlite3-*
+/data/*
+!/data/.gitkeep
+uploads/
+**/uploads/
+private_uploads/
+**/private_uploads/
+private_brand_material/
+**/private_brand_material/
+*_uploads/
+**/*_uploads/
+
+# Uploaded files (may contain PII in real use)
+*.upload
+*.blob
+
+# Streamlit
+.streamlit/secrets.toml
+
+# macOS
+.DS_Store
+
+# IDEs
+.idea/
+.vscode/
+*.swp
+
+# Generated archives
+*.zip
+
+# Private local document-stress inputs and generated outputs
+/local_test_documents/
+/evaluation/document_stress/generated/
