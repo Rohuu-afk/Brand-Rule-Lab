@@ -75,6 +75,24 @@ def render():
     demo_banner()
     ai_disclosure()
 
+    if st.session_state.pop("load_sample_review", False):
+        st.session_state["new_review_title"] = "Sample: Monsoon launch post"
+        st.session_state["new_review_product"] = "Monsoon Clear Skin Face Wash"
+        st.session_state["new_review_market"] = "IN"
+        st.session_state["new_review_channel"] = "instagram"
+        st.session_state["new_review_content_type"] = "paid social"
+        st.session_state["new_review_input_method"] = "📋 Paste text copy"
+        st.session_state["new_review_pasted_copy"] = (
+            "Monsoon Clear Skin Face Wash guarantees clear skin in 3 days. "
+            "It's the best choice for everyone."
+        )
+        st.session_state["new_review_brief"] = "Monsoon Clear Skin Launch Campaign"
+
+    st.info(
+        "The guided sample is synthetic and intentionally includes claims the demo rules should flag. "
+        "AI consent is off by default; you can run the deterministic checks without sending content to an AI provider."
+    )
+
     products = get_all_products()
     product_options = {"(No product selected)": None} | {p["name"]: p["id"] for p in products}
 
@@ -84,11 +102,16 @@ def render():
     col1, col2 = st.columns(2)
 
     with col1:
-        draft_title = st.text_input("Draft title (required)", placeholder="e.g. Monsoon Clear Skin Launch Post")
+        draft_title = st.text_input(
+            "Draft title (required)",
+            placeholder="e.g. Monsoon Clear Skin Launch Post",
+            key="new_review_title",
+        )
         selected_product_name = st.selectbox(
             "Product (recommended)",
             list(product_options.keys()),
             help="Select the specific product this draft is marketing. Product-scoped rules apply only to matching products.",
+            key="new_review_product",
         )
         product_id = product_options[selected_product_name]
 
@@ -97,16 +120,19 @@ def render():
             "Market (recommended)",
             ["", "IN", "US", "GB", "AU", "SG"],
             help="Geographic market (e.g. IN for India, US for United States). Scoped rules execute only in designated markets.",
+            key="new_review_market",
         )
         channel = st.selectbox(
             "Publishing channel (recommended)",
             ["", "instagram", "email", "website", "print_ad", "tv", "radio"],
             help="Publishing channel. Channel-specific constraints apply accordingly.",
+            key="new_review_channel",
         )
         content_type = st.text_input(
             "Content type (optional)",
             placeholder="For example: paid social, product page, packaging",
             help="Used to apply guidance scoped to a specific content type.",
+            key="new_review_content_type",
         )
 
     # Campaign brief (optional)
@@ -115,7 +141,14 @@ def render():
         brief for brief in briefs if _brief_matches_scope(brief, market, channel)
     ]
     brief_options = {"(No brief attached)": None} | {b["name"]: b["id"] for b in briefs}
-    selected_brief_name = st.selectbox("Campaign brief (optional)", list(brief_options.keys()), help="Attach a campaign brief to check messaging alignment and required talking points.")
+    if st.session_state.get("new_review_brief") not in brief_options:
+        st.session_state["new_review_brief"] = "(No brief attached)"
+    selected_brief_name = st.selectbox(
+        "Campaign brief (optional)",
+        list(brief_options.keys()),
+        help="Attach a campaign brief to check messaging alignment and required talking points.",
+        key="new_review_brief",
+    )
     brief_id = brief_options[selected_brief_name]
 
     # ---- Step 2: Content ----
@@ -125,6 +158,7 @@ def render():
         "Content input method:",
         ["📋 Paste text copy", "📎 Upload document or asset file"],
         horizontal=True,
+        key="new_review_input_method",
     )
 
     parsed_result: dict | None = None
@@ -137,6 +171,7 @@ def render():
             "Draft copy",
             height=160,
             placeholder="e.g. Say goodbye to acne forever! Our 2.5% BPO wash clears breakouts in 3 days. It's the best solution for everyone.",
+            key="new_review_pasted_copy",
         )
         if pasted.strip():
             parsed_result = parse_text(pasted.strip())

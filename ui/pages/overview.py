@@ -8,9 +8,15 @@ from ui.components import page_header, section_heading
 from ui.styles import ai_disclosure, demo_banner, inject_styles
 
 
-def _navigate(page: str, role: str | None = None) -> None:
+def _navigate(
+    page: str,
+    role: str | None = None,
+    load_sample_review: bool = False,
+) -> None:
     if role:
         st.session_state["sidebar_role"] = role
+    if load_sample_review:
+        st.session_state["load_sample_review"] = True
     st.session_state["sidebar_page"] = page
 
 
@@ -27,6 +33,32 @@ def render() -> None:
     st.info(
         "The demo workspace is available without signing in. The role selector is a "
         "demonstration control, not authentication or real access control."
+    )
+
+    section_heading("Try the core workflow")
+    st.write(
+        "Submit marketing copy → inspect rule-based findings and evidence → correct the draft "
+        "and make a human decision. You can try this now without setting up a brand first."
+    )
+    action_cols = st.columns(3)
+    action_cols[0].button(
+        "Try a guided sample review",
+        type="primary",
+        width="stretch",
+        on_click=_navigate,
+        args=("New Review", UserRole.CREATOR.value, True),
+    )
+    action_cols[1].button(
+        "Review my own content",
+        width="stretch",
+        on_click=_navigate,
+        args=("New Review", UserRole.CREATOR.value),
+    )
+    action_cols[2].button(
+        "Set up brand knowledge",
+        width="stretch",
+        on_click=_navigate,
+        args=("Brand Knowledge",),
     )
 
     with st.expander("AI provider connection diagnostics", expanded=False):
@@ -86,22 +118,11 @@ def render() -> None:
                     else:
                         st.error(f"Connection result: {result['category']}")
 
-    action_cols = st.columns(3)
-    action_cols[0].button(
-        "Get Started", type="primary", width="stretch",
-        on_click=_navigate, args=("Brand Knowledge",),
-    )
-    action_cols[1].button(
-        "Continue to a saved review", width="stretch",
-        on_click=_navigate, args=("Review History",),
-    )
-    action_cols[2].button(
-        "Explore the demo workspace", width="stretch",
-        on_click=_navigate, args=("New Review", UserRole.CREATOR.value),
-    )
-
     st.markdown("---")
-    section_heading("Your setup progress")
+    section_heading("Optional workspace setup")
+    st.caption(
+        "These steps help customise the workspace but are not required to try the content review."
+    )
     completed = sum(item["done"] for item in readiness["checklist"])
     total = len(readiness["checklist"])
     st.progress(completed / total if total else 0)
