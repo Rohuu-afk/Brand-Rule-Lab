@@ -521,10 +521,10 @@ DARK_MODE_CSS = """
     --brl-pearl: #f3faf8;
     --brl-frosted: rgba(23, 40, 44, 0.72);
     --brl-raised: rgba(30, 50, 54, 0.82);
-    --brl-text: #e6f0ee;
-    --brl-text-secondary: #c1d2cf;
-    --brl-text-muted: #a9bfbb;
-    --brl-border: rgba(164, 196, 190, 0.22);
+    --brl-text: #f4fbf9;
+    --brl-text-secondary: #e2f1ef;
+    --brl-text-muted: #cfe3e1;
+    --brl-border: rgba(184, 222, 217, 0.3);
     --brl-dark: #287c7e;
     --brl-pass: #8ed3aa;
     --brl-pass-bg: rgba(39, 93, 65, 0.42);
@@ -538,6 +538,28 @@ DARK_MODE_CSS = """
     --brl-shadow-raised: 0 10px 24px rgba(0, 0, 0, 0.28), inset 0 1px 0 rgba(255, 255, 255, 0.06);
     --brl-shadow-inset: inset 0 1px 3px rgba(0, 0, 0, 0.26), inset 0 -1px 0 rgba(255, 255, 255, 0.04);
     color-scheme: dark;
+}
+
+label,
+.stTextInput label,
+.stSelectbox label,
+.stTextarea label,
+.stNumberInput label,
+.stDateInput label,
+.stForm label,
+[data-testid="stMarkdownContainer"] p,
+[data-testid="stMarkdownContainer"] li,
+[data-testid="stSidebar"] p,
+[data-testid="stSidebar"] label,
+[data-testid="stSidebar"] span,
+[data-testid="stSidebar"] h3,
+[data-testid="stSidebar"] h4 {
+    color: var(--brl-text) !important;
+}
+[data-testid="stCaptionContainer"],
+small,
+.stMarkdown p {
+    color: var(--brl-text-secondary) !important;
 }
 
 .stApp {
@@ -606,7 +628,7 @@ input, textarea, [data-baseweb="select"] > div,
     color: var(--brl-text) !important;
     background: rgba(15, 27, 30, 0.84) !important;
 }
-input::placeholder, textarea::placeholder { color: #a9bfbb !important; opacity: 0.82; }
+input::placeholder, textarea::placeholder { color: #e4f3f2 !important; opacity: 0.86; }
 [data-testid="stFileUploader"] section {
     border-color: rgba(140, 202, 195, 0.4);
     background: rgba(24, 42, 46, 0.6);
