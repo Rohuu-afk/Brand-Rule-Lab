@@ -689,10 +689,21 @@ code { color: #c4e6df; background: rgba(53, 89, 89, 0.55); }
     border-color: rgba(180, 211, 205, 0.22) !important;
     background: #1b2d31 !important;
     box-shadow: 0 18px 38px rgba(0, 0, 0, 0.32) !important;
+    color: var(--brl-text) !important;
+}
+[role="option"],
+[role="option"] span,
+[role="option"] div {
+    color: var(--brl-text) !important;
 }
 [role="option"][aria-selected="true"], [role="option"][data-selected="true"] {
     color: var(--brl-text) !important;
     background: rgba(67, 111, 112, 0.56) !important;
+}
+[role="option"]:hover,
+[role="option"][data-focused="true"] {
+    color: var(--brl-text) !important;
+    background: rgba(81, 129, 130, 0.5) !important;
 }
 </style>
 """
