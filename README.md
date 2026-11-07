@@ -58,7 +58,7 @@ The application is structured into layered, decoupled components:
 * **Privacy Disclosure**: Before each draft review or knowledge extraction, the user must affirmatively consent. For drafts within the 30,000-character claim-extraction limit, claim extraction receives the draft text and Python-generated source candidates; each fact-ranking request receives one validated source claim and only eligible approved fact candidates (statements and evidence references); tone/messaging receives at most 8,000 draft characters plus bounded guideline and campaign context. Brand Knowledge uploads are parsed locally and their raw files are stored in SQLite. Extracted document text is sent to NVIDIA NIM or its configured Google Gemini fallback only after explicit consent and the user starts extraction. Without consent, deterministic checks still run and AI-only checks are marked `NOT_OBSERVED`. Do not submit confidential production material unless your organisation has reviewed both services' data handling and configured safeguards. AI suggestions are advisory and require human review.
 * **No AI Tool Access**: The AI model is strictly restricted to text analysis; it is given no tool/function calling access and no direct database access.
 * **Schema Validation**: Every AI response must conform to rigid `jsonschema` definitions (`CLAIM_EXTRACTION_SCHEMA`, `KNOWLEDGE_EXTRACTION_SCHEMA`, `FACT_RANKING_SCHEMA`, `TONE_FINDINGS_SCHEMA`) before entering the application pipeline. NVIDIA exposes response format and usage metadata where available.
-* **Credential Isolation**: API keys are read strictly from environment variables and never exposed in logs, UI components, or error messages.
+* **Credential Isolation**: Provider configuration prefers environment variables and falls back to root-level Streamlit Community Cloud secrets. Credential values are never exposed in logs, UI components, or error messages.
 * **Model and external services**: NVIDIA NIM is called through its OpenAI-compatible API at `https://integrate.api.nvidia.com/v1`; the safe default and tested configuration are `nvidia/nemotron-3-nano-omni-30b-a3b-reasoning`. `NVIDIA_MODEL` remains configurable alongside `NVIDIA_API_KEY` and `NVIDIA_TIMEOUT_SECONDS`. If NIM is unavailable, the adapter records the provider switch and uses Google Gemini (`GEMINI_API_KEY`, `GEMINI_MODEL`, `GEMINI_FALLBACK_MODEL`, and `GEMINI_TIMEOUT_SECONDS`). Gemini retains a bounded model fallback. A provider fallback does not guarantee service availability.
 
 ---
@@ -120,13 +120,21 @@ AI top-3 accuracy remains unmeasured (`null`). Synthetic fixture outcomes are no
 
 The automated provider tests mock NVIDIA request/authentication handling, NVIDIA-to-Gemini fallback, and Gemini model fallback. They do not validate live connectivity, model access, or real-model response quality.
 
-**Optional manual live NVIDIA NIM connection test (one request; requires an NVIDIA key and may consume service quota):** configure `NVIDIA_API_KEY` in `.env` after reviewing your organisation's data-handling requirements. This calls the primary directly and does not print the key or response:
+**Optional manual live NVIDIA NIM connection test (one request; requires an NVIDIA key and may consume service quota):** configure `NVIDIA_API_KEY` in the local environment or `.env` after reviewing your organisation's data-handling requirements. This calls the primary directly and does not print the key or response:
 
 ```powershell
 & .\.venv\Scripts\python.exe -c "from ai.nvidia_provider import NvidiaNimProvider; p=NvidiaNimProvider(); p.test_connection(); print('NVIDIA NIM connection succeeded; model=' + str(p.last_model_used))"
 ```
 
 Do not run this as part of automated tests. A successful connection only verifies authentication and a response from the configured model; it does not establish claim-extraction quality or review accuracy.
+
+**Optional manual live Gemini connection test (one request; requires a Gemini key and may consume service quota):**
+
+```powershell
+& .\.venv\Scripts\python.exe -c "from ai.gemini_provider import GeminiProvider; p=GeminiProvider(); p.test_connection(); print('Google Gemini connection succeeded; model=' + str(p.last_model_used))"
+```
+
+On Streamlit Community Cloud, configure `AI_PROVIDER`, `NVIDIA_API_KEY`, `NVIDIA_MODEL`, `GEMINI_API_KEY`, `GEMINI_MODEL`, and optionally `GEMINI_FALLBACK_MODEL` in the app's **Settings → Secrets** as root-level TOML entries. Environment variables take precedence; Streamlit secrets are the fallback. No committed `.env` or `secrets.toml` is required. The Overview page's **AI provider connection diagnostics** panel tests NVIDIA and Gemini independently with a fixed, non-draft prompt. Do not copy secret values into the repository, screenshots, logs, or issue reports.
 
 ## 5. Synthetic Judge Database and Walkthrough
 

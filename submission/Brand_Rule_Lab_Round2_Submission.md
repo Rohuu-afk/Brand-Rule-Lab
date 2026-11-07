@@ -137,7 +137,7 @@ Brand Rule Lab establishes role-based governance:
   - Scoped fact retrieval, AI provider integrations (NVIDIA NIM & Google Gemini fallback), and JSON-schema validation.
   - Claim ledger, stable ID hashing, and SQL drift cascade propagation.
   - Automated test suite (236 test cases) and synthetic evaluation harness.
-- **Member B (UI, Workflows & QA):**
+- **Member B — Himanshu (UI, Workflows & QA):**
   - Streamlit user interface across Creator, Reviewer, and Fact Owner workflows.
   - Rule Readiness Audit interface, proposal review screens, and self-test runner UI.
   - Visual metadata inspection, contrast previews, and diff visualization.
