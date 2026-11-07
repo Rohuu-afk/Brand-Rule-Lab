@@ -2,21 +2,21 @@
 ai/gemini_provider.py
 ---------------------
 Google Gemini implementation of the AIProvider interface.
-Reads GEMINI_API_KEY, GEMINI_MODEL, and GEMINI_TIMEOUT_SECONDS from environment.
+Reads configuration from environment variables with Streamlit secrets as fallback.
 
 Security & Reliability policy
 ------------------------------
-- API key is loaded exclusively from project-root .env and never logged, printed, or exposed.
-- Error messages are sanitized to strip any accidental credential fragments.
+- API keys are never logged, printed, or exposed.
 - Configurable timeout suitable for model inference (default: 60.0 seconds).
 - Distinct classification and backoff for:
     * HTTP 429: TransientQuotaError and immediate fallback routing
     * HTTP 500/502/503: ServiceUnavailableError and fallback routing
     * HTTP 504 / Timeouts: ServiceUnavailableError and fallback routing
-    * HTTP 400/401/403/404: NonRetryableAIError (no retry, fails immediately)
+    * HTTP 400/401/403: NonRetryableAIError (fails immediately)
+    * HTTP 404: tries the configured fallback model before failing
 - At most ONE retry when no fallback is configured; with fallback, each model is tried once.
 - Optional fallback model support (e.g. gemini-3.1-flash-lite) if primary model is unavailable.
-- Configures thinking_budget=0 to prevent unbudgeted thinking loops on flash models.
+- Uses the supported Gemini 3 thinking_level configuration.
 - Clean AIProviderError raising on failure so callers can gracefully record AI checks
   as NOT_OBSERVED without suppressing deterministic rules.
 """
@@ -24,16 +24,12 @@ Security & Reliability policy
 from __future__ import annotations
 
 import logging
-import os
 import re
 import time
-from pathlib import Path
 from typing import Any
 
 from google import genai
 from google.genai import types
-from dotenv import load_dotenv
-
 from ai.base import (
     AIProvider,
     AIProviderError,
@@ -42,12 +38,9 @@ from ai.base import (
     NonRetryableAIError,
     safe_error_summary,
 )
+from ai.config import get_config_value
 
 logger = logging.getLogger("brand_rule_lab.ai")
-
-# Load credentials exclusively from the project-root .env file.
-_ENV_PATH = Path(__file__).resolve().parent.parent / ".env"
-load_dotenv(dotenv_path=_ENV_PATH, override=False)
 
 _DEFAULT_MODEL = "gemini-3.8-flash"
 _DEFAULT_FALLBACK_MODEL = "gemini-3.1-flash-lite"
@@ -62,58 +55,44 @@ def clear_exhausted_models() -> None:
     _EXHAUSTED_MODELS.clear()
 
 
-def _sanitize_error_message(message: str, api_key: str = "") -> str:
-    """Strip raw credentials, API key patterns, and query params from error text."""
-    sanitized = message
-    if api_key and len(api_key) > 4:
-        sanitized = sanitized.replace(api_key, "[REDACTED_API_KEY]")
-    # Google API key pattern (AIza...)
-    sanitized = re.sub(r"AIza[0-9A-Za-z-_]{35}", "[REDACTED_API_KEY]", sanitized)
-    # URL query parameter key=...
-    sanitized = re.sub(r"(key=)[^&\s'\"]+", r"\1[REDACTED_API_KEY]", sanitized)
-    return sanitized
-
-
-def _classify_gemini_error(exc: Exception, api_key: str = "") -> AIProviderError:
+def _classify_gemini_error(exc: Exception) -> AIProviderError:
     """
     Classify an exception from Google GenAI into a specific AIProviderError subclass.
     Separates 429, transient server errors, client timeouts, and non-retryable errors.
     Ensures no credentials leak into error messages.
     """
-    raw_msg = str(exc)
-    clean_msg = _sanitize_error_message(raw_msg, api_key)
-    err_str = raw_msg.lower()
-
     status_code = getattr(exc, "code", None) or getattr(exc, "status_code", None)
+    if not isinstance(status_code, int):
+        response = getattr(exc, "response", None)
+        status_code = getattr(response, "status_code", None)
+    if not isinstance(status_code, int):
+        match = re.search(r"\b(?:HTTP\s*)?([45]\d\d)\b", str(exc), re.IGNORECASE)
+        status_code = int(match.group(1)) if match else None
+    err_str = str(exc).lower()
 
     # 429: Rate Limit / Quota Exhaustion
-    if (
-        status_code == 429
-        or "429" in err_str
+    if (status_code == 429
         or "resource_exhausted" in err_str
         or "quota" in err_str
         or "rate limit" in err_str
         or "ratelimit" in err_str
     ):
-        return TransientQuotaError(f"Gemini API rate limit or quota exceeded (HTTP 429): {clean_msg}")
+        return TransientQuotaError("Gemini HTTP 429 (quota or rate limit). Check quota or retry later.")
 
     # Transient server errors should route to fallback when configured.
-    if (
-        status_code in (500, 502, 503)
-        or any(f"HTTP {code}" in err_str or f"{code} " in err_str for code in (500, 502, 503))
-        or "503" in err_str
+    if ((status_code is not None and status_code >= 500)
         or "unavailable" in err_str
         or "overloaded" in err_str
         or "high demand" in err_str
         or "server error" in err_str
     ):
-        return ServiceUnavailableError(f"Gemini transient server error: {clean_msg}")
+        status = f" HTTP {status_code}" if status_code else ""
+        return ServiceUnavailableError(f"Gemini{status} service failure. Retry later or check Google service status.")
 
     # 504 / Timeouts / Deadline Exceeded
     if (
         isinstance(exc, TimeoutError)
         or status_code == 504
-        or "504" in err_str
         or "deadline exceeded" in err_str
         or "deadline expired" in err_str
         or status_code in (408, 504)
@@ -123,16 +102,21 @@ def _classify_gemini_error(exc: Exception, api_key: str = "") -> AIProviderError
         or "readtimeout" in err_str
         or "connecttimeout" in err_str
     ):
-        return ServiceUnavailableError(f"Gemini API request timed out (HTTP 504 / Timeout): {clean_msg}")
+        return ServiceUnavailableError(
+            "Gemini network request timed out. Retry after checking network connectivity."
+        )
 
-    # Authentication / Client / Bad Request / Non-retryable
-    return NonRetryableAIError(f"Gemini API error ({type(exc).__name__}): {clean_msg}")
-
-
-def _is_transient(exc: Exception) -> bool:
-    """Return True if the error is considered transient and eligible for at most ONE retry."""
-    classified = _classify_gemini_error(exc)
-    return isinstance(classified, (TransientQuotaError, ServiceUnavailableError))
+    safe_categories = {
+        400: "invalid request",
+        401: "authentication failure",
+        403: "permission failure",
+        404: "model or endpoint not found",
+    }
+    if status_code in safe_categories:
+        return NonRetryableAIError(
+            f"Gemini HTTP {status_code} ({safe_categories[status_code]}). Check provider configuration."
+        )
+    return NonRetryableAIError(f"Gemini API request failed ({type(exc).__name__}).")
 
 
 class GeminiProvider(AIProvider):
@@ -141,22 +125,20 @@ class GeminiProvider(AIProvider):
     provider_name = "Google Gemini"
 
     def __init__(self, timeout_seconds: float | None = None) -> None:
-        api_key = os.getenv("GEMINI_API_KEY", "").strip()
+        api_key = get_config_value("GEMINI_API_KEY")
         if not api_key or api_key in ("your_gemini_api_key_here", ""):
-            raise NonRetryableAIError(
-                "GEMINI_API_KEY is not set. "
-                "Copy .env.example to .env and add your key."
-            )
-        self._raw_key = api_key
-        self._model_name = os.getenv("GEMINI_MODEL", _DEFAULT_MODEL)
-        self._fallback_model = os.getenv("GEMINI_FALLBACK_MODEL", _DEFAULT_FALLBACK_MODEL)
+            raise NonRetryableAIError("GEMINI_API_KEY is not configured.")
+        self._model_name = get_config_value("GEMINI_MODEL", _DEFAULT_MODEL)
+        self._fallback_model = get_config_value("GEMINI_FALLBACK_MODEL", _DEFAULT_FALLBACK_MODEL)
         self._last_model_used: str | None = None
         self._used_fallback: bool = False
         self._fallback_reason: str | None = None
         
         # Timeout configured from parameter, env, or 60.0s default
         self._timeout_seconds = float(
-            timeout_seconds if timeout_seconds is not None else os.getenv("GEMINI_TIMEOUT_SECONDS", str(_DEFAULT_TIMEOUT_SECONDS))
+            timeout_seconds if timeout_seconds is not None else get_config_value(
+                "GEMINI_TIMEOUT_SECONDS", str(_DEFAULT_TIMEOUT_SECONDS)
+            )
         )
         self._http_options = types.HttpOptions(timeout=int(self._timeout_seconds * 1000))
         self._client = genai.Client(api_key=api_key, http_options=self._http_options)
@@ -198,25 +180,14 @@ class GeminiProvider(AIProvider):
         - Routes transient errors to fallback when configured.
         - Retries at most once only when fallback is unavailable.
         - Seamless fallback to an active model if primary model is experiencing high demand.
-        - Sets thinking_budget=0 to prevent unbudgeted thinking loops on flash models.
+        - Uses Gemini 3's supported minimal thinking level.
         - Never exposes credentials in logs or errors.
         """
         effective_timeout = float(timeout if timeout is not None else self._timeout_seconds)
 
-        # Configure request parameters with reasonable token limits
-        config_kwargs: dict[str, Any] = {
-            "temperature": temperature,
-            "max_output_tokens": min(max_output_tokens, 2048),
-            "http_options": types.HttpOptions(timeout=int(effective_timeout * 1000)),
-        }
-        if json_mode:
-            config_kwargs["response_mime_type"] = "application/json"
-        try:
-            config_kwargs["thinking_config"] = types.ThinkingConfig(thinking_budget=0)
-        except Exception:
-            pass
-
-        config = types.GenerateContentConfig(**config_kwargs)
+        self._last_model_used = None
+        self._used_fallback = False
+        self._fallback_reason = None
 
         # Build candidate models: primary first, followed by fallback if configured
         models_to_try: list[str] = []
@@ -262,6 +233,20 @@ class GeminiProvider(AIProvider):
 
             for attempt in range(max_attempts):
                 try:
+                    config_kwargs: dict[str, Any] = {
+                        "max_output_tokens": min(max_output_tokens, 2048),
+                        "http_options": types.HttpOptions(timeout=int(effective_timeout * 1000)),
+                    }
+                    if target_model.lower().startswith("gemini-3"):
+                        config_kwargs["thinking_config"] = types.ThinkingConfig(
+                            thinking_level=types.ThinkingLevel.MINIMAL
+                        )
+                    else:
+                        config_kwargs["temperature"] = temperature
+                    if json_mode:
+                        config_kwargs["response_mime_type"] = "application/json"
+                    config = types.GenerateContentConfig(**config_kwargs)
+
                     logger.info(
                         "Executing Gemini request (model=%s, timeout=%.1fs, attempt=%d/%d)...",
                         target_model,
@@ -293,11 +278,22 @@ class GeminiProvider(AIProvider):
                     return ""
 
                 except Exception as exc:
-                    classified = _classify_gemini_error(exc, self._raw_key)
+                    classified = _classify_gemini_error(exc)
                     last_classified = classified
 
                     # Client non-retryable errors abort immediately
                     if isinstance(classified, NonRetryableAIError):
+                        status_code = getattr(exc, "code", None) or getattr(exc, "status_code", None)
+                        if not isinstance(status_code, int):
+                            match = re.search(r"\b(?:HTTP\s*)?(404)\b", str(exc), re.IGNORECASE)
+                            status_code = int(match.group(1)) if match else None
+                        if status_code == 404 and not is_fallback and len(models_to_try) > 1:
+                            self._used_fallback = True
+                            self._fallback_reason = (
+                                f"Primary model '{target_model}' was not found. "
+                                f"Routed to fallback model '{models_to_try[1]}'."
+                            )
+                            break
                         logger.error(
                             "Non-retryable Gemini error (%s). Aborting.",
                             safe_error_summary(classified),
@@ -343,3 +339,11 @@ class GeminiProvider(AIProvider):
         if last_classified:
             raise last_classified from None
         raise ServiceUnavailableError("Gemini API call failed after bounded model attempts.")
+
+    def test_connection(self) -> str:
+        """Perform a minimal authenticated request without any draft content."""
+        return self.generate_text(
+            "Reply with exactly: GEMINI_CONNECTION_OK",
+            temperature=0,
+            max_output_tokens=16,
+        )

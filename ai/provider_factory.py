@@ -13,23 +13,16 @@ Adding a new provider
 ---------------------
 1. Create ai/new_provider.py implementing AIProvider.
 2. Add an elif branch below.
-3. Set AI_PROVIDER=new_provider in .env.
+3. Set AI_PROVIDER=new_provider in the environment or Streamlit root-level secrets.
 """
 
 from __future__ import annotations
 
-import os
 import logging
-from pathlib import Path
 
 from ai.base import AIProvider, AIProviderError, NonRetryableAIError
-from dotenv import load_dotenv
+from ai.config import get_config_value
 
-# Load credentials exclusively from the project-root .env file.
-# override=False means already-set OS environment variables are never clobbered.
-# .env.example is never read.
-_ENV_PATH = Path(__file__).resolve().parent.parent / ".env"
-load_dotenv(dotenv_path=_ENV_PATH, override=False)
 logger = logging.getLogger("brand_rule_lab.ai.provider_factory")
 
 
@@ -119,7 +112,7 @@ def get_provider() -> AIProvider:
     Return NVIDIA NIM as the primary provider with Gemini fallback.
     AI_PROVIDER=gemini remains available as an explicit legacy override.
     """
-    provider_name = os.getenv("AI_PROVIDER", "nvidia").strip().lower()
+    provider_name = get_config_value("AI_PROVIDER", "nvidia").lower()
 
     if provider_name in ("nvidia", "nvidia_nim"):
         return NvidiaPrimaryWithGeminiFallback()
@@ -130,3 +123,30 @@ def get_provider() -> AIProvider:
     raise NonRetryableAIError(
         f"Unknown AI_PROVIDER '{provider_name}'. Use 'nvidia' or 'gemini'."
     )
+
+
+def get_provider_diagnostics() -> dict:
+    """Return provider selection and credential-presence metadata, never credential values."""
+    selected = get_config_value("AI_PROVIDER", "nvidia").lower()
+    selected_provider = (
+        "Google Gemini" if selected == "gemini" else
+        "NVIDIA NIM" if selected in ("nvidia", "nvidia_nim") else
+        "Unknown"
+    )
+    return {
+        "selected_provider": selected_provider,
+        "providers": {
+            "NVIDIA NIM": {
+                "selected": selected_provider == "NVIDIA NIM",
+                "credential_configured": bool(get_config_value("NVIDIA_API_KEY")),
+                "model": get_config_value(
+                    "NVIDIA_MODEL", "nvidia/nemotron-3-nano-omni-30b-a3b-reasoning"
+                ),
+            },
+            "Google Gemini": {
+                "selected": selected_provider == "Google Gemini",
+                "credential_configured": bool(get_config_value("GEMINI_API_KEY")),
+                "model": get_config_value("GEMINI_MODEL", "gemini-3.8-flash"),
+            },
+        },
+    }

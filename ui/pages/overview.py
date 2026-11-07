@@ -29,6 +29,63 @@ def render() -> None:
         "demonstration control, not authentication or real access control."
     )
 
+    with st.expander("AI provider connection diagnostics", expanded=False):
+        from ai.base import AIProviderError, safe_error_summary
+        from ai.provider_factory import get_provider_diagnostics
+
+        diagnostics = get_provider_diagnostics()
+        st.caption(
+            "Each test sends a fixed, non-draft prompt directly to one provider. "
+            "Credential values are never displayed."
+        )
+        st.write(f"Provider selected: **{diagnostics['selected_provider']}**")
+        nvidia_column, gemini_column = st.columns(2)
+        provider_columns = (
+            (nvidia_column, "NVIDIA NIM", "nvidia"),
+            (gemini_column, "Google Gemini", "gemini"),
+        )
+        for column, provider_name, provider_key in provider_columns:
+            config = diagnostics["providers"][provider_name]
+            with column:
+                st.markdown(f"**{provider_name}**")
+                st.write(
+                    "Credential configured: "
+                    + ("**YES**" if config["credential_configured"] else "**NO**")
+                )
+                st.write("Provider selected: " + ("**YES**" if config["selected"] else "**NO**"))
+                st.write(f"Model configured: `{config['model']}`")
+                if st.button(
+                    f"Test {provider_name} connection",
+                    key=f"test_{provider_key}_provider_connection",
+                    disabled=not config["credential_configured"],
+                ):
+                    try:
+                        if provider_key == "nvidia":
+                            from ai.nvidia_provider import NvidiaNimProvider
+
+                            provider = NvidiaNimProvider()
+                        else:
+                            from ai.gemini_provider import GeminiProvider
+
+                            provider = GeminiProvider()
+                        provider.test_connection()
+                        st.session_state[f"{provider_key}_connection_result"] = {
+                            "success": True,
+                            "model": provider.last_model_used or config["model"],
+                        }
+                    except AIProviderError as exc:
+                        st.session_state[f"{provider_key}_connection_result"] = {
+                            "success": False,
+                            "category": safe_error_summary(exc),
+                        }
+
+                result = st.session_state.get(f"{provider_key}_connection_result")
+                if result:
+                    if result["success"]:
+                        st.success(f"Connection result: SUCCESS · model: {result['model']}")
+                    else:
+                        st.error(f"Connection result: {result['category']}")
+
     action_cols = st.columns(3)
     action_cols[0].button(
         "Get Started", type="primary", width="stretch",

@@ -7,26 +7,19 @@ NVIDIA NIM provider using its OpenAI-compatible chat completions endpoint.
 from __future__ import annotations
 
 import json
-import os
-import re
-from pathlib import Path
+import socket
 from typing import Any
 from urllib.error import HTTPError, URLError
 from urllib.request import Request, urlopen
 
-from dotenv import load_dotenv
-
 from ai.base import (
     AIProvider,
-    AIProviderError,
     NonRetryableAIError,
     ServiceUnavailableError,
     TransientQuotaError,
 )
+from ai.config import get_config_value
 
-
-_ENV_PATH = Path(__file__).resolve().parent.parent / ".env"
-load_dotenv(dotenv_path=_ENV_PATH, override=False)
 
 _BASE_URL = "https://integrate.api.nvidia.com/v1"
 _DEFAULT_MODEL = "nvidia/nemotron-3-nano-omni-30b-a3b-reasoning"
@@ -34,33 +27,21 @@ _DEFAULT_TIMEOUT_SECONDS = 40.0
 _MAX_TIMEOUT_SECONDS = 120.0
 
 
-def _sanitize(message: str, api_key: str = "") -> str:
-    if api_key:
-        message = message.replace(api_key, "[REDACTED_API_KEY]")
-    message = re.sub(r"(?i)bearer\s+\S+", "Bearer [REDACTED_API_KEY]", message)
-    message = re.sub(r"nvapi-[A-Za-z0-9_-]+", "[REDACTED_API_KEY]", message)
-    return message
-
-
-def _response_detail(body: bytes, api_key: str) -> str:
-    try:
-        payload = json.loads(body.decode("utf-8"))
-    except (UnicodeDecodeError, json.JSONDecodeError):
-        return "The service returned an unreadable error response."
-    error = payload.get("error", {}) if isinstance(payload, dict) else {}
-    if isinstance(error, dict):
-        detail = (
-            error.get("message")
-            or error.get("detail")
-            or error.get("type")
-            or (payload.get("detail") if isinstance(payload, dict) else "")
-            or (payload.get("title") if isinstance(payload, dict) else "")
-        )
-    elif isinstance(payload, dict):
-        detail = payload.get("detail") or payload.get("title") or str(error)
-    else:
-        detail = str(error)
-    return _sanitize(str(detail)[:500], api_key) or "No additional error details were provided."
+def _http_error_message(status: int) -> str:
+    categories = {
+        400: ("invalid request", "Check the configured model and request compatibility."),
+        401: ("authentication failure", "Verify the NVIDIA_API_KEY secret is current."),
+        403: ("permission failure", "Verify the account has access to this model and endpoint."),
+        404: ("model or endpoint not found", "Verify NVIDIA_MODEL and the configured endpoint."),
+        408: ("network timeout", "Retry after checking network connectivity."),
+        429: ("quota or rate limit", "Check NVIDIA quota/rate limits or retry later."),
+    }
+    if status in categories:
+        category, action = categories[status]
+        return f"NVIDIA NIM HTTP {status} ({category}): {action}"
+    if status >= 500:
+        return f"NVIDIA NIM HTTP {status} (service failure): Retry later or check NVIDIA service status."
+    return f"NVIDIA NIM HTTP {status} (request rejected): Check provider configuration."
 
 
 class NvidiaNimProvider(AIProvider):
@@ -69,17 +50,17 @@ class NvidiaNimProvider(AIProvider):
     provider_name = "NVIDIA NIM"
 
     def __init__(self) -> None:
-        self._api_key = os.getenv("NVIDIA_API_KEY", "").strip()
+        self._api_key = get_config_value("NVIDIA_API_KEY")
         if not self._api_key:
             raise NonRetryableAIError("NVIDIA_API_KEY is not configured.")
 
         self._base_url = _BASE_URL
-        self._model = os.getenv("NVIDIA_MODEL", _DEFAULT_MODEL).strip()
+        self._model = get_config_value("NVIDIA_MODEL", _DEFAULT_MODEL)
         if not self._model:
             raise NonRetryableAIError("NVIDIA_MODEL must not be empty.")
         try:
             self._timeout_seconds = float(
-                os.getenv("NVIDIA_TIMEOUT_SECONDS", str(_DEFAULT_TIMEOUT_SECONDS))
+                get_config_value("NVIDIA_TIMEOUT_SECONDS", str(_DEFAULT_TIMEOUT_SECONDS))
             )
         except ValueError as exc:
             raise NonRetryableAIError("NVIDIA_TIMEOUT_SECONDS must be numeric.") from exc
@@ -141,18 +122,25 @@ class NvidiaNimProvider(AIProvider):
             with urlopen(request, timeout=effective_timeout) as response:
                 body = response.read()
         except HTTPError as exc:
-            status = exc.code
-            detail = _response_detail(exc.read(), self._api_key)
-            message = f"NVIDIA NIM request failed with HTTP {status}: {detail}"
-            if status == 429:
-                raise TransientQuotaError(_sanitize(message, self._api_key)) from None
-            if status in (408, 504) or status >= 500:
-                raise ServiceUnavailableError(_sanitize(message, self._api_key)) from None
-            raise NonRetryableAIError(_sanitize(message, self._api_key)) from None
-        except (TimeoutError, URLError, OSError) as exc:
-            detail = _sanitize(str(getattr(exc, "reason", exc)), self._api_key)
+            message = _http_error_message(exc.code)
+            if exc.code == 429:
+                raise TransientQuotaError(message) from None
+            if exc.code in (408, 504) or exc.code >= 500:
+                raise ServiceUnavailableError(message) from None
+            raise NonRetryableAIError(message) from None
+        except (TimeoutError, socket.timeout):
             raise ServiceUnavailableError(
-                f"NVIDIA NIM request timed out or could not connect: {detail}"
+                "NVIDIA NIM network timeout: The request timed out before completion."
+            ) from None
+        except URLError as exc:
+            if isinstance(exc.reason, (TimeoutError, socket.timeout)) or "timed out" in str(exc.reason).lower():
+                message = "NVIDIA NIM network timeout: The request timed out before completion."
+            else:
+                message = "NVIDIA NIM network failure: Check network connectivity and outbound access."
+            raise ServiceUnavailableError(message) from None
+        except OSError:
+            raise ServiceUnavailableError(
+                "NVIDIA NIM network failure: Check network connectivity and outbound access."
             ) from None
 
         try:
@@ -166,9 +154,9 @@ class NvidiaNimProvider(AIProvider):
                 )
             if not isinstance(content, str) or not content.strip():
                 raise ValueError("The response contained no text.")
-        except (UnicodeDecodeError, json.JSONDecodeError, KeyError, IndexError, TypeError, ValueError) as exc:
+        except (UnicodeDecodeError, json.JSONDecodeError, KeyError, IndexError, TypeError, ValueError):
             raise ServiceUnavailableError(
-                f"NVIDIA NIM returned an unusable response: {_sanitize(str(exc), self._api_key)}"
+                "NVIDIA NIM returned an unusable response (invalid JSON or missing response text)."
             ) from None
 
         choice = result["choices"][0]
@@ -182,7 +170,7 @@ class NvidiaNimProvider(AIProvider):
         return content
 
     def test_connection(self) -> str:
-        """Perform one small authenticated request and return the model response."""
+        """Perform one small authenticated request without any draft content."""
         return self.generate_text(
             "Reply with exactly: NVIDIA_NIM_CONNECTION_OK",
             temperature=0,

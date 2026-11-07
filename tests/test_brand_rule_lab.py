@@ -4904,7 +4904,7 @@ def test_nvidia_authentication_error_is_sanitized_and_classified(monkeypatch):
     assert test_key not in str(exc_info.value)
 
 
-def test_nvidia_rfc7807_error_detail_is_preserved_and_sanitized(monkeypatch):
+def test_nvidia_rfc7807_error_details_are_not_exposed(monkeypatch):
     from urllib.error import HTTPError
     from ai.base import NonRetryableAIError
     from ai.nvidia_provider import NvidiaNimProvider
@@ -4931,7 +4931,7 @@ def test_nvidia_rfc7807_error_detail_is_preserved_and_sanitized(monkeypatch):
     with pytest.raises(NonRetryableAIError) as exc_info:
         NvidiaNimProvider().test_connection()
     assert "HTTP 410" in str(exc_info.value)
-    assert "The model is retired." in str(exc_info.value)
+    assert "The model is retired." not in str(exc_info.value)
     assert test_key not in str(exc_info.value)
 
 

@@ -76,8 +76,26 @@ class NonRetryableAIError(AIProviderError):
 def safe_error_summary(error: BaseException) -> str:
     """Summarize an AI error without echoing provider text, credentials, or draft content."""
     message = str(error).casefold()
-    if any(token in message for token in ("timeout", "timed out", "deadline")):
+    statuses = {
+        "http 400": "HTTP 400 invalid request",
+        "http 401": "HTTP 401 authentication failure",
+        "http 403": "HTTP 403 permission failure",
+        "http 404": "HTTP 404 model or endpoint not found",
+        "http 429": "HTTP 429 quota or rate limit",
+    }
+    http_summary = next((summary for token, summary in statuses.items() if token in message), None)
+    if http_summary:
+        summary = http_summary
+    elif "network timeout" in message or any(token in message for token in ("timeout", "timed out", "deadline")):
         summary = "request timed out"
+    elif any(token in message for token in ("http 5", "service failure", "service unavailable")):
+        status = next(
+            (token.upper() for token in ("http 500", "http 502", "http 503", "http 504") if token in message),
+            "HTTP 5xx",
+        )
+        summary = f"{status} service failure"
+    elif "network failure" in message:
+        summary = "network connection failed"
     elif "invalid json" in message or "schema validation" in message:
         summary = "invalid JSON or schema response"
     elif any(token in message for token in ("api key", "unauthorized", "authentication", "not configured")):
