@@ -138,7 +138,7 @@ def test_gemini_3_uses_supported_thinking_config_and_json_mode(monkeypatch):
 
     assert provider.generate_text("safe test prompt", json_mode=True) == '{"claims": []}'
     config = provider._client.models.generate_content.call_args.kwargs["config"]
-    assert config.thinking_config.thinking_level == types.ThinkingLevel.MINIMAL
+    assert config.thinking_config.thinking_level == types.ThinkingLevel.LOW
     assert config.thinking_config.thinking_budget is None
     assert config.temperature is None
     assert config.response_mime_type == "application/json"
@@ -168,7 +168,7 @@ def test_gemini_primary_404_routes_to_configured_fallback(monkeypatch):
         for call in provider._client.models.generate_content.call_args_list
     ] == ["gemini-3.8-flash", "gemini-3.1-flash-lite"]
     fallback_config = provider._client.models.generate_content.call_args_list[1].kwargs["config"]
-    assert fallback_config.thinking_config.thinking_level == types.ThinkingLevel.MINIMAL
+    assert fallback_config.thinking_config.thinking_level == types.ThinkingLevel.LOW
     assert fallback_config.temperature is None
     assert provider.used_fallback is True
     assert provider.last_model_used == "gemini-3.1-flash-lite"

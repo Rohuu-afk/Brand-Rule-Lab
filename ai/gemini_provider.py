@@ -239,7 +239,7 @@ class GeminiProvider(AIProvider):
                     }
                     if target_model.lower().startswith("gemini-3"):
                         config_kwargs["thinking_config"] = types.ThinkingConfig(
-                            thinking_level=types.ThinkingLevel.MINIMAL
+                            thinking_level=types.ThinkingLevel.LOW
                         )
                     else:
                         config_kwargs["temperature"] = temperature
