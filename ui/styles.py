@@ -300,6 +300,16 @@ p, [data-testid="stMarkdownContainer"] { color: inherit; }
     color: var(--brl-text);
     font-weight: 570;
 }
+[data-testid="stExpander"] p,
+[data-testid="stExpander"] li,
+[data-testid="stExpander"] span,
+[data-testid="stExpander"] div,
+[data-testid="stExpander"] strong,
+[data-testid="stExpander"] em,
+[data-testid="stExpander"] label,
+[data-testid="stExpander"] code {
+    color: var(--brl-text) !important;
+}
 
 /* A quiet specular sweep adds glass depth without distorting page text. */
 [data-testid="stSidebarContent"],
@@ -616,6 +626,16 @@ small,
 }
 [data-testid="stExpander"]:hover {
     background: linear-gradient(145deg, rgba(43, 69, 73, 0.88), rgba(27, 47, 51, 0.86)) !important;
+}
+[data-testid="stExpander"] p,
+[data-testid="stExpander"] li,
+[data-testid="stExpander"] span,
+[data-testid="stExpander"] div,
+[data-testid="stExpander"] strong,
+[data-testid="stExpander"] em,
+[data-testid="stExpander"] label,
+[data-testid="stExpander"] code {
+    color: var(--brl-text) !important;
 }
 input, textarea, [data-baseweb="select"] > div,
 [data-testid="stDateInput"] input, [data-testid="stNumberInput"] input {
