@@ -123,10 +123,6 @@ def render() -> None:
     st.caption(
         "These steps help customise the workspace but are not required to try the content review."
     )
-    completed = sum(item["done"] for item in readiness["checklist"])
-    total = len(readiness["checklist"])
-    st.progress(completed / total if total else 0)
-    st.caption(f"{completed} of {total} first-use steps complete. Progress is based on saved workspace data.")
     metric_rows = (
         (
             ("Active guidelines", readiness["rules"]),
@@ -151,11 +147,14 @@ def render() -> None:
     if not readiness["brand_identity"]:
         st.info("Brand identity has not been saved yet. You can still start a review with the available demo knowledge.")
 
-    section_heading("Getting started")
-    for index, item in enumerate(readiness["checklist"], start=1):
-        status = "Complete" if item["done"] else "Next"
-        st.markdown(f"**{index}. {item['label']}** · {status}")
-    st.caption("You can skip irrelevant steps and return later. A partially configured brand can still use available review checks.")
+    with st.expander("Optional setup checklist"):
+        st.caption(
+            "This reflects records already in the shared workspace, not your personal progress. "
+            "You can skip these steps and still try the content review."
+        )
+        for index, item in enumerate(readiness["checklist"], start=1):
+            status = "Already in workspace" if item["done"] else "Not set up"
+            st.markdown(f"**{index}. {item['label']}** · {status}")
 
     steps = [
         (
