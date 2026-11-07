@@ -6,6 +6,13 @@ import streamlit as st
 
 
 BRAND_CSS = """
+<svg aria-hidden="true" focusable="false" style="position:fixed;width:0;height:0;overflow:hidden;pointer-events:none">
+    <filter id="brl-liquid-refraction" x="-8%" y="-8%" width="116%" height="116%" color-interpolation-filters="sRGB">
+        <feTurbulence type="fractalNoise" baseFrequency="0.014 0.02" numOctaves="1" seed="8" result="glass-waves" />
+        <feGaussianBlur in="glass-waves" stdDeviation="2.5" result="smooth-waves" />
+        <feDisplacementMap in="SourceGraphic" in2="smooth-waves" scale="26" xChannelSelector="R" yChannelSelector="G" />
+    </filter>
+</svg>
 <style>
 :root {
     --brl-bg: #E7F1F0;
@@ -13,6 +20,9 @@ BRAND_CSS = """
     --brl-pearl: #F6FBFA;
     --brl-frosted: rgba(245, 253, 252, 0.44);
     --brl-raised: rgba(248, 253, 252, 0.7);
+    --brl-glass-blur: 30px;
+    --brl-glass-surface: linear-gradient(145deg, rgba(255, 255, 255, 0.32), rgba(201, 233, 232, 0.12));
+    --brl-glass-reflection: linear-gradient(122deg, rgba(255, 255, 255, 0.52) 0%, rgba(255, 255, 255, 0.22) 12%, transparent 36%), radial-gradient(ellipse at 8% 0%, rgba(255, 255, 255, 0.5), transparent 48%), linear-gradient(300deg, transparent 56%, rgba(255, 255, 255, 0.08) 78%, rgba(255, 255, 255, 0.24));
     --brl-text: #20383B;
     --brl-text-secondary: #294448;
     --brl-text-muted: #2C4649;
@@ -29,7 +39,7 @@ BRAND_CSS = """
     --brl-radius-sm: 12px;
     --brl-radius: 18px;
     --brl-radius-lg: 24px;
-    --brl-shadow-glass: 0 18px 46px rgba(30, 75, 78, 0.12), 0 4px 14px rgba(30, 75, 78, 0.07);
+    --brl-shadow-glass: 0 18px 46px rgba(30, 75, 78, 0.12), 0 4px 14px rgba(30, 75, 78, 0.07), inset 1px 1px 0 rgba(255, 255, 255, 0.94), inset -1px -1px 0 rgba(143, 193, 195, 0.2);
     --brl-shadow-raised: 0 10px 24px rgba(30, 75, 78, 0.13), inset 0 1px 0 rgba(255, 255, 255, 0.72);
     --brl-shadow-inset: inset 0 1px 3px rgba(40, 85, 88, 0.12), inset 0 -1px 0 rgba(255, 255, 255, 0.82);
     color-scheme: light;
@@ -76,9 +86,9 @@ html, body, [class*="css"] {
 }
 
 [data-testid="stHeader"] {
-    background: rgba(231, 245, 243, 0.42) !important;
-    backdrop-filter: blur(28px) saturate(165%);
-    -webkit-backdrop-filter: blur(28px) saturate(165%);
+    background: rgba(231, 245, 243, 0.3) !important;
+    backdrop-filter: blur(var(--brl-glass-blur)) saturate(180%);
+    -webkit-backdrop-filter: blur(var(--brl-glass-blur)) saturate(180%);
 }
 
 .block-container {
@@ -119,12 +129,12 @@ p, [data-testid="stMarkdownContainer"] { color: inherit; }
     max-height: calc(100dvh - 1.4rem);
     border: 1px solid rgba(255, 255, 255, 0.82);
     border-radius: 24px;
-    background: linear-gradient(145deg, rgba(250, 255, 254, 0.4), rgba(205, 235, 234, 0.16)) !important;
-    backdrop-filter: blur(32px) saturate(175%);
-    -webkit-backdrop-filter: blur(32px) saturate(175%);
+    background: var(--brl-glass-reflection), var(--brl-glass-surface) !important;
+    backdrop-filter: blur(var(--brl-glass-blur)) saturate(180%);
+    -webkit-backdrop-filter: blur(var(--brl-glass-blur)) saturate(180%);
     box-shadow: 0 18px 44px rgba(30, 75, 78, 0.14),
-        inset 1px 1px 0 rgba(255, 255, 255, 0.88),
-        inset -1px -1px 0 rgba(135, 192, 194, 0.18);
+        inset 1px 1px 0 rgba(255, 255, 255, 0.92),
+        inset -1px -1px 0 rgba(135, 192, 194, 0.2);
     overflow-x: hidden;
     overflow-y: auto;
     overscroll-behavior-y: contain;
@@ -256,9 +266,9 @@ p, [data-testid="stMarkdownContainer"] { color: inherit; }
     padding: 1rem 1.1rem;
     border: 1px solid rgba(255, 255, 255, 0.82);
     border-radius: var(--brl-radius);
-    background: linear-gradient(145deg, rgba(250, 255, 254, 0.42), rgba(208, 237, 235, 0.18)) !important;
-    backdrop-filter: blur(26px) saturate(165%);
-    -webkit-backdrop-filter: blur(26px) saturate(165%);
+    background: var(--brl-glass-reflection), var(--brl-glass-surface) !important;
+    backdrop-filter: blur(var(--brl-glass-blur)) saturate(180%);
+    -webkit-backdrop-filter: blur(var(--brl-glass-blur)) saturate(180%);
     box-shadow: var(--brl-shadow-glass), inset 1px 1px 0 rgba(255,255,255,0.92),
         inset -1px -1px 0 rgba(143, 193, 195, 0.16);
 }
@@ -267,24 +277,24 @@ p, [data-testid="stMarkdownContainer"] { color: inherit; }
 [data-testid="stVerticalBlockBorderWrapper"] {
     border-color: rgba(255, 255, 255, 0.78) !important;
     border-radius: var(--brl-radius) !important;
-    background: linear-gradient(145deg, rgba(250, 255, 254, 0.36), rgba(201, 233, 232, 0.14)) !important;
-    backdrop-filter: blur(26px) saturate(165%);
-    -webkit-backdrop-filter: blur(26px) saturate(165%);
+    background: var(--brl-glass-reflection), var(--brl-glass-surface) !important;
+    backdrop-filter: blur(var(--brl-glass-blur)) saturate(180%);
+    -webkit-backdrop-filter: blur(var(--brl-glass-blur)) saturate(180%);
     box-shadow: var(--brl-shadow-glass), inset 1px 1px 0 rgba(255,255,255,0.9),
         inset -1px -1px 0 rgba(143, 193, 195, 0.14);
 }
 [data-testid="stExpander"] {
     border: 1px solid rgba(255, 255, 255, 0.78);
     border-radius: var(--brl-radius) !important;
-    background: linear-gradient(145deg, rgba(250, 255, 254, 0.34), rgba(201, 233, 232, 0.13)) !important;
-    backdrop-filter: blur(24px) saturate(160%);
-    -webkit-backdrop-filter: blur(24px) saturate(160%);
+    background: var(--brl-glass-reflection), var(--brl-glass-surface) !important;
+    backdrop-filter: blur(var(--brl-glass-blur)) saturate(180%);
+    -webkit-backdrop-filter: blur(var(--brl-glass-blur)) saturate(180%);
     box-shadow: 0 14px 34px rgba(30, 75, 78, 0.09),
         inset 1px 1px 0 rgba(255, 255, 255, 0.86);
     transition: box-shadow 160ms ease, background-color 160ms ease;
 }
 [data-testid="stExpander"]:hover {
-    background: linear-gradient(145deg, rgba(252, 255, 255, 0.66), rgba(222, 242, 242, 0.34)) !important;
+    background: var(--brl-glass-reflection), var(--brl-glass-surface) !important;
     box-shadow: 0 16px 38px rgba(30, 75, 78, 0.12),
         inset 1px 1px 0 rgba(255, 255, 255, 0.94);
 }
@@ -311,17 +321,18 @@ input:focus, textarea:focus, [data-baseweb="select"] > div:focus-within {
     padding: 1.15rem;
     border: 1px solid rgba(255, 255, 255, 0.78);
     border-radius: var(--brl-radius-lg);
-    background: linear-gradient(145deg, rgba(250, 255, 254, 0.36), rgba(201, 233, 232, 0.14));
-    backdrop-filter: blur(24px) saturate(160%);
-    -webkit-backdrop-filter: blur(24px) saturate(160%);
+    background: var(--brl-glass-reflection), var(--brl-glass-surface);
+    backdrop-filter: blur(var(--brl-glass-blur)) saturate(180%);
+    -webkit-backdrop-filter: blur(var(--brl-glass-blur)) saturate(180%);
     box-shadow: 0 14px 34px rgba(30, 75, 78, 0.08),
         inset 1px 1px 0 rgba(255,255,255,0.9);
 }
 [data-testid="stFileUploader"] section {
     border: 1px dashed rgba(39, 111, 116, 0.42);
     border-radius: var(--brl-radius);
-    background: rgba(244, 253, 252, 0.48);
-    backdrop-filter: blur(22px) saturate(155%);
+    background: var(--brl-glass-reflection), var(--brl-glass-surface);
+    backdrop-filter: blur(var(--brl-glass-blur)) saturate(180%);
+    -webkit-backdrop-filter: blur(var(--brl-glass-blur)) saturate(180%);
 }
 
 button, [role="button"], [data-baseweb="tab"] {
@@ -348,15 +359,15 @@ button, [role="button"], [data-baseweb="tab"] {
     border: 1px solid rgba(255, 255, 255, 0.82) !important;
     border-radius: 14px !important;
     color: var(--brl-text) !important;
-    background: rgba(250, 255, 254, 0.42) !important;
-    backdrop-filter: blur(18px) saturate(160%);
-    -webkit-backdrop-filter: blur(18px) saturate(160%);
+    background: var(--brl-glass-reflection), var(--brl-glass-surface) !important;
+    backdrop-filter: blur(var(--brl-glass-blur)) saturate(180%);
+    -webkit-backdrop-filter: blur(var(--brl-glass-blur)) saturate(180%);
     box-shadow: 0 8px 20px rgba(30, 75, 78, 0.1),
         inset 1px 1px 0 rgba(255, 255, 255, 0.88) !important;
 }
 [data-testid="stBaseButton-secondary"]:hover, button[kind="secondary"]:hover {
     border-color: rgba(255, 255, 255, 0.92) !important;
-    background: rgba(255, 255, 255, 0.76) !important;
+    background: var(--brl-glass-reflection), linear-gradient(145deg, rgba(255, 255, 255, 0.48), rgba(201, 233, 232, 0.2)) !important;
     box-shadow: 0 12px 24px rgba(30, 75, 78, 0.14),
         inset 1px 1px 0 rgba(255, 255, 255, 0.96) !important;
 }
@@ -366,9 +377,9 @@ button, [role="button"], [data-baseweb="tab"] {
     padding: 0.35rem;
     border: 1px solid rgba(255, 255, 255, 0.72);
     border-radius: 16px;
-    background: rgba(218, 240, 239, 0.4) !important;
-    backdrop-filter: blur(24px) saturate(165%);
-    -webkit-backdrop-filter: blur(24px) saturate(165%);
+    background: var(--brl-glass-reflection), var(--brl-glass-surface) !important;
+    backdrop-filter: blur(var(--brl-glass-blur)) saturate(180%);
+    -webkit-backdrop-filter: blur(var(--brl-glass-blur)) saturate(180%);
 }
 [data-baseweb="tab"], [role="tab"] {
     color: var(--brl-text-secondary) !important;
@@ -391,8 +402,8 @@ button, [role="button"], [data-baseweb="tab"] {
     overflow: hidden;
     border: 1px solid rgba(255, 255, 255, 0.82);
     border-radius: var(--brl-radius);
-    background: rgba(247, 254, 253, 0.4);
-    backdrop-filter: blur(22px) saturate(155%);
+    background: var(--brl-glass-reflection), var(--brl-glass-surface);
+    backdrop-filter: blur(var(--brl-glass-blur)) saturate(180%);
     box-shadow: var(--brl-shadow-glass);
 }
 [data-testid="stProgress"] > div > div {
@@ -410,8 +421,8 @@ button, [role="button"], [data-baseweb="tab"] {
     border-radius: inherit;
     border: 1px solid rgba(255, 255, 255, 0.56);
     background: rgba(247, 253, 252, 0.68);
-    backdrop-filter: blur(22px) saturate(155%);
-    -webkit-backdrop-filter: blur(22px) saturate(155%);
+    backdrop-filter: blur(var(--brl-glass-blur)) saturate(180%);
+    -webkit-backdrop-filter: blur(var(--brl-glass-blur)) saturate(180%);
 }
 [data-testid="stAlertContentSuccess"] { color: var(--brl-pass) !important; background: var(--brl-pass-bg) !important; }
 [data-testid="stAlertContentError"] { color: var(--brl-fail) !important; background: var(--brl-fail-bg) !important; }
@@ -446,9 +457,9 @@ button, [role="button"], [data-baseweb="tab"] {
     border: 1px solid rgba(255, 255, 255, 0.78);
     border-radius: var(--brl-radius-sm);
     color: var(--brl-text);
-    background: linear-gradient(145deg, rgba(250, 255, 254, 0.42), rgba(201, 233, 232, 0.19));
-    backdrop-filter: blur(24px) saturate(160%);
-    -webkit-backdrop-filter: blur(24px) saturate(160%);
+    background: var(--brl-glass-reflection), var(--brl-glass-surface);
+    backdrop-filter: blur(var(--brl-glass-blur)) saturate(180%);
+    -webkit-backdrop-filter: blur(var(--brl-glass-blur)) saturate(180%);
     font-size: 0.86rem;
 }
 .ai-disclosure { background: rgba(211, 235, 235, 0.42); border-color: rgba(255,255,255,0.86); color: #365F63; }
@@ -482,14 +493,37 @@ code { color: #315B5E; background: rgba(214, 237, 237, 0.7); border-radius: 5px;
     border: 1px solid rgba(255, 255, 255, 0.88) !important;
     border-radius: 16px !important;
     background: rgba(241, 251, 250, 0.94) !important;
-    backdrop-filter: blur(26px) saturate(165%);
-    -webkit-backdrop-filter: blur(26px) saturate(165%);
+    backdrop-filter: blur(var(--brl-glass-blur)) saturate(180%);
+    -webkit-backdrop-filter: blur(var(--brl-glass-blur)) saturate(180%);
     box-shadow: 0 18px 38px rgba(30, 75, 78, 0.18),
         inset 1px 1px 0 rgba(255, 255, 255, 0.96) !important;
 }
 [role="option"][aria-selected="true"], [role="option"][data-selected="true"] {
     color: var(--brl-text) !important;
     background: rgba(208, 235, 233, 0.92) !important;
+}
+@supports (backdrop-filter: url("#brl-liquid-refraction")) {
+    [data-testid="stHeader"],
+    [data-testid="stSidebarContent"],
+    [data-testid="stMetric"],
+    [data-testid="stVerticalBlockBorderWrapper"],
+    [data-testid="stExpander"],
+    [data-testid="stForm"],
+    [data-testid="stFileUploader"] section,
+    [data-testid="stBaseButton-secondary"],
+    [data-baseweb="tab-list"],
+    [role="tablist"],
+    [data-testid="stDataFrame"],
+    [data-testid="stTable"],
+    [data-testid="stAlertContainer"],
+    .ai-disclosure,
+    .demo-banner,
+    .quote-box,
+    .evidence-callout,
+    .action-guidance {
+        backdrop-filter: url("#brl-liquid-refraction") blur(var(--brl-glass-blur)) saturate(180%);
+        -webkit-backdrop-filter: url("#brl-liquid-refraction") blur(var(--brl-glass-blur)) saturate(180%);
+    }
 }
 </style>
 """
