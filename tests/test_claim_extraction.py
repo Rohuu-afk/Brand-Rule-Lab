@@ -68,6 +68,69 @@ def test_candidate_segmentation_keeps_ambiguous_clauses_together():
     assert candidates[0]["text"] == text
 
 
+def test_ocr_banner_text_enters_claim_review(monkeypatch):
+    from io import BytesIO
+
+    from PIL import Image
+    import pytesseract
+
+    from services import document_parser
+
+    banner_text = "Monsoon Clear Skin Face Wash guarantees clear skin in 3 days."
+    image_buffer = BytesIO()
+    Image.new("RGB", (640, 180), "white").save(image_buffer, format="PNG")
+    monkeypatch.setattr(document_parser, "_configure_tesseract", lambda _: "")
+    monkeypatch.setattr(
+        pytesseract,
+        "image_to_string",
+        lambda *args, **kwargs: banner_text,
+    )
+
+    parsed = document_parser.parse_file("banner.png", image_buffer.getvalue())
+    assert parsed["text"] == banner_text
+    candidates = build_claim_candidates(parsed["text"])
+    assert len(candidates) == 1
+
+    provider = SelectionProvider(
+        [{"candidate_id": candidates[0]["candidate_id"], "claim_type_hint": "efficacy"}]
+    )
+    with get_connection() as conn:
+        draft_id = conn.execute(
+            "INSERT INTO drafts (title, product_id, market, channel) "
+            "VALUES ('OCR banner review', 4, 'IN', 'instagram')"
+        ).lastrowid
+
+    result = run_review(
+        draft_id,
+        parsed["text"],
+        parsed["source_type"],
+        parsed["page_map"],
+        4,
+        "IN",
+        "instagram",
+        None,
+        provider,
+    )
+
+    extraction_prompt = next(
+        prompt for prompt in provider.prompts
+        if prompt.startswith(CLAIM_EXTRACTION_MARKER)
+    )
+    assert banner_text in extraction_prompt
+    with get_connection() as conn:
+        mention = conn.execute(
+            "SELECT claim_text FROM claim_mentions WHERE draft_version_id = ?",
+            (result["draft_version_id"],),
+        ).fetchone()
+        version = conn.execute(
+            "SELECT source_type FROM draft_versions WHERE id = ?",
+            (result["draft_version_id"],),
+        ).fetchone()
+    assert mention["claim_text"] == banner_text
+    assert version["source_type"] == "image"
+    assert any(finding["result"] == FindingResult.FAIL.value for finding in result["findings"])
+
+
 def test_extraction_validator_rejects_bad_items_individually():
     response = json.dumps(
         {

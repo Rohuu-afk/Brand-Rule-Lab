@@ -157,7 +157,7 @@ Suggested 3–5 minute demonstration:
 3. Review the fact history to see the new version that triggered deterministic propagation; no model call or web crawl was used for this status change.
 4. Inspect the deliberately flawed synthetic draft and its V-04, T-12, F-112, and superlative findings. Inspect the generated synthetic approved image and its exact SHA-256 identity result; it is not a real company logo.
 
-**Current validation (2026-11-07):** `.venv\Scripts\python.exe -m pytest -q` completed with **236 passed, 0 failed, 6 PyMuPDF/SWIG deprecation warnings**. Tests use isolated SQLite databases and mocked provider responses; this run made no NVIDIA or Gemini API calls. In a separate disposable browser workflow, a Reviewer classified and approved a source-backed synthetic CODE_CHECKABLE rule with a whitelisted `term_list` predicate and passing/failing examples. The active approved rule generated a deterministic `FAIL` in content review without external-AI consent. After restarting the app against the same disposable database, its active state and history row remained present and the health endpoint returned HTTP 200. This verifies the Rule Readiness UI-to-review path, not secure authentication or live AI quality. The application is deployed and publicly accessible on Streamlit Community Cloud at https://brand-rule-lab-ceyrdcrbd2aaxl6d5ndxs4.streamlit.app/.
+**Current validation (2026-11-08):** `.venv\Scripts\python.exe -m pytest -q` completed with **237 passed, 0 failed, 6 PyMuPDF/SWIG deprecation warnings**. Tests use isolated SQLite databases and mocked provider responses; this run made no NVIDIA or Gemini API calls. An OCR-banner integration regression verifies that image-extracted text enters claim extraction and deterministic review using mocked OCR and AI responses. A separate disposable check with local Tesseract and mocked AI verified real banner OCR text was submitted to claim extraction and saved as the reviewed claim; it used no external AI or durable database. In a separate disposable browser workflow, a Reviewer classified and approved a source-backed synthetic CODE_CHECKABLE rule with a whitelisted `term_list` predicate and passing/failing examples. The active approved rule generated a deterministic `FAIL` in content review without external-AI consent. After restarting the app against the same disposable database, its active state and history row remained present and the health endpoint returned HTTP 200. This verifies the Rule Readiness UI-to-review path, not secure authentication or live AI quality. The application is deployed and publicly accessible on Streamlit Community Cloud at https://brand-rule-lab-ceyrdcrbd2aaxl6d5ndxs4.streamlit.app/.
 
 ### Privacy wording for the Round 1 deck (slides 8 and 12)
 
@@ -169,9 +169,9 @@ The deck is not present in this workspace, so its slide text could not be edited
 
 ---
 
-## 6. Team Contributions
+## 6. User-Testing Evidence
 
-**Team confirmation required before submission:** list each member's name and contribution based on the team's own records. This source snapshot has no Git metadata and does not establish authorship or individual contribution history; do not treat prior unverified attribution as evidence.
+No structured 3–5 participant usability study is documented in this repository. Developer walkthroughs and automated tests are not user-testing evidence. Record anonymized participant feedback, observed friction, and changes made after testing before claiming this study is complete.
 
 ---
 
