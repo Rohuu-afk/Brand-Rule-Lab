@@ -8,6 +8,11 @@ Brand Rule Lab is an intelligent brand-governance platform that reviews content 
 
 📄 **[Brand Rule Lab Product Architecture & Walkthrough PDF](Brand_Rule_Lab_Walkthrough.pdf)** — Visual walkthrough styled with the platform's design system explaining the end-to-end workflow, claim ledger, Rule Readiness audit, live checks, and technical architecture.
 
+🌐 **Live Deployed Application:** **[https://brand-rule-lab-ceyrdcrbd2aaxl6d5ndxs4.streamlit.app/](https://brand-rule-lab-ceyrdcrbd2aaxl6d5ndxs4.streamlit.app/)**  
+*(Open in any browser without sign-in to test the live pre-publication review and claim ledger)*
+
+📂 **Source Code Repository:** **[https://github.com/Rohuu-afk/Brand-Rule-Lab](https://github.com/Rohuu-afk/Brand-Rule-Lab)**
+
 ---
 
 ## 1. Architecture & Technology Disclosures

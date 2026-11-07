@@ -3,7 +3,9 @@
 
 **Team:** rohitlongesha5  
 **Team Leader:** Rohit Longesha  
-**Project:** Brand Rule Lab — Pre-publication review with a claim-to-fact ledger
+**Project:** Brand Rule Lab — Pre-publication review with a claim-to-fact ledger  
+**Live Deployed Application:** [https://brand-rule-lab-ceyrdcrbd2aaxl6d5ndxs4.streamlit.app/](https://brand-rule-lab-ceyrdcrbd2aaxl6d5ndxs4.streamlit.app/)  
+**GitHub Repository:** [https://github.com/Rohuu-afk/Brand-Rule-Lab](https://github.com/Rohuu-afk/Brand-Rule-Lab)  
 
 ---
 
