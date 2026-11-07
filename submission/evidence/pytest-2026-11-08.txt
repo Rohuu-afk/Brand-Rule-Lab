@@ -1,0 +1,22 @@
+........................................................................ [ 30%]
+........................................................................ [ 60%]
+........................................................................ [ 91%]
+.....................                                                    [100%]
+============================== warnings summary ===============================
+<frozen importlib._bootstrap>:549
+<frozen importlib._bootstrap>:549
+  <frozen importlib._bootstrap>:549: DeprecationWarning: builtin type SwigPyPacked has no __module__ attribute
+
+<frozen importlib._bootstrap>:549
+<frozen importlib._bootstrap>:549
+  <frozen importlib._bootstrap>:549: DeprecationWarning: builtin type SwigPyObject has no __module__ attribute
+
+<frozen importlib._bootstrap>:549
+  <frozen importlib._bootstrap>:549: DeprecationWarning: builtin type swigvarlink has no __module__ attribute
+
+.venv\Lib\site-packages\pymupdf\__init__.py:425
+  C:\Users\rohit\OneDrive\Desktop\Brand Rule Lab\.venv\Lib\site-packages\pymupdf\__init__.py:425: DeprecationWarning: 'typing.ByteString' and 'collections.abc.ByteString' are deprecated and slated for removal in Python 3.17
+    ByteString = typing.ByteString
+
+-- Docs: https://docs.pytest.org/en/stable/how-to/capture-warnings.html
+237 passed, 6 warnings in 49.88s

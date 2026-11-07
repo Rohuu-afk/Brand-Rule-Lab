@@ -114,6 +114,8 @@ The application is structured into layered, decoupled components:
 
 Run the test suite with `.venv\Scripts\python.exe -m pytest -q` on Windows or `python -m pytest -q` elsewhere. Each test uses a fresh temporary SQLite database and temporary uploads directory. Provider behavior is mocked; automated tests do not make NVIDIA or Gemini API calls.
 
+The captured full-suite output and screenshot from the 2026-11-08 local run are included in [`submission/evidence/`](submission/evidence/). The source ZIP packages these files alongside the test suite so the reported test count can be independently checked.
+
 The synthetic, offline evaluation runner is `.venv\Scripts\python.exe evaluation\run_synthetic_evaluation.py`. It exercises 60 synthetic deterministic relationship cases, 10 generated asset registrations, and 30 prompt-injection drafts. Its results are internal fixture checks only: they are not independent validation, AI top-3 accuracy, production timings, or proof of real-model prompt-injection robustness.
 
 AI top-3 accuracy remains unmeasured (`null`). Synthetic fixture outcomes are not independent validation, real-user testing, live-model results, or production performance measurements.
