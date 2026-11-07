@@ -7,9 +7,15 @@ No authentication — this is a demo app.
 
 from __future__ import annotations
 
+import base64
+from pathlib import Path
+
 import streamlit as st
 
 from models.enums import UserRole
+
+
+_WORDMARK_LOGO_PATH = Path(__file__).parent / "assets" / "brand-rule-lab-logo.png"
 
 
 PAGE_GROUPS = {
@@ -71,9 +77,11 @@ def render_sidebar() -> tuple[UserRole, str]:
     Returns (selected_role, selected_page_label).
     """
     with st.sidebar:
+        logo_data = base64.b64encode(_WORDMARK_LOGO_PATH.read_bytes()).decode("ascii")
         st.markdown(
             '<div class="brl-wordmark">'
-            '<div class="brl-wordmark__mark">BR</div>'
+            f'<img class="brl-wordmark__logo" src="data:image/png;base64,{logo_data}" '
+            'alt="Brand Rule Lab logo">'
             '<div><div class="brl-wordmark__name">Brand Rule Lab</div>'
             '<div class="brl-wordmark__tag">Governance workspace</div></div>'
             '</div>',
@@ -82,6 +90,7 @@ def render_sidebar() -> tuple[UserRole, str]:
 
         st.markdown("#### Workspace role")
         st.caption("Simulated role control; this is not sign-in or authentication.")
+        st.toggle("Dark mode", key="brl_dark_mode", value=False)
         role_options = [r.value for r in UserRole]
         selected_role_str = st.selectbox(
             "Select your role",

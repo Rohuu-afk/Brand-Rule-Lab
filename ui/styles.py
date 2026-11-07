@@ -204,6 +204,14 @@ p, [data-testid="stMarkdownContainer"] { color: inherit; }
     font-size: 0.73rem;
     font-weight: 720;
 }
+.brl-wordmark__logo {
+    display: block;
+    flex: 0 0 42px;
+    width: 42px;
+    height: 42px;
+    border-radius: 12px;
+    object-fit: contain;
+}
 .brl-wordmark__name { font-size: 0.96rem; font-weight: 680; }
 .brl-wordmark__tag { margin-top: 2px; color: var(--brl-text-secondary); font-size: 0.68rem; }
 .brl-nav-group {
@@ -291,6 +299,17 @@ p, [data-testid="stMarkdownContainer"] { color: inherit; }
 [data-testid="stExpander"] details summary {
     color: var(--brl-text);
     font-weight: 570;
+}
+
+/* A quiet specular sweep adds glass depth without distorting page text. */
+[data-testid="stSidebarContent"],
+[data-testid="stMetric"],
+[data-testid="stVerticalBlockBorderWrapper"],
+[data-testid="stExpander"],
+[data-testid="stForm"] {
+    background-image:
+        radial-gradient(ellipse at 12% 0%, rgba(255, 255, 255, 0.18), transparent 38%),
+        linear-gradient(118deg, rgba(255, 255, 255, 0.1), transparent 34%, rgba(178, 225, 224, 0.045) 72%, transparent) !important;
 }
 
 /* Inset controls use the same warm raised surface as the app background. */
@@ -494,10 +513,176 @@ code { color: #315B5E; background: rgba(214, 237, 237, 0.7); border-radius: 5px;
 </style>
 """
 
+DARK_MODE_CSS = """
+<style>
+:root {
+    --brl-bg: #10191c;
+    --brl-bg-secondary: #17272b;
+    --brl-pearl: #f3faf8;
+    --brl-frosted: rgba(23, 40, 44, 0.72);
+    --brl-raised: rgba(30, 50, 54, 0.82);
+    --brl-text: #e6f0ee;
+    --brl-text-secondary: #c1d2cf;
+    --brl-text-muted: #a9bfbb;
+    --brl-border: rgba(164, 196, 190, 0.22);
+    --brl-dark: #287c7e;
+    --brl-pass: #8ed3aa;
+    --brl-pass-bg: rgba(39, 93, 65, 0.42);
+    --brl-fail: #ffaaa1;
+    --brl-fail-bg: rgba(115, 48, 48, 0.42);
+    --brl-warning: #f0c77e;
+    --brl-warning-bg: rgba(111, 81, 31, 0.4);
+    --brl-info: #9bd5dc;
+    --brl-info-bg: rgba(38, 91, 99, 0.4);
+    --brl-shadow-glass: 0 18px 46px rgba(0, 0, 0, 0.28), 0 4px 14px rgba(0, 0, 0, 0.18);
+    --brl-shadow-raised: 0 10px 24px rgba(0, 0, 0, 0.28), inset 0 1px 0 rgba(255, 255, 255, 0.06);
+    --brl-shadow-inset: inset 0 1px 3px rgba(0, 0, 0, 0.26), inset 0 -1px 0 rgba(255, 255, 255, 0.04);
+    color-scheme: dark;
+}
+
+.stApp {
+    background: linear-gradient(125deg, #142326 0%, #1b3034 38%, #202c36 72%, #332922 100%) !important;
+    color: var(--brl-text);
+}
+.stApp::before {
+    background:
+        linear-gradient(112deg, rgba(28, 122, 122, 0.12) 0%, transparent 31%, transparent 69%, rgba(166, 96, 65, 0.12) 100%),
+        linear-gradient(12deg, transparent 0%, rgba(255, 255, 255, 0.035) 42%, rgba(87, 136, 146, 0.06) 76%, transparent 100%);
+}
+[data-testid="stHeader"] { background: rgba(15, 25, 28, 0.58) !important; }
+[data-testid="stSidebarContent"] {
+    border-color: rgba(180, 211, 205, 0.24);
+    background: linear-gradient(145deg, rgba(32, 54, 58, 0.88), rgba(20, 35, 39, 0.82)) !important;
+    box-shadow: 0 18px 44px rgba(0, 0, 0, 0.3), inset 1px 1px 0 rgba(255, 255, 255, 0.07);
+}
+[data-testid="stSidebar"] [data-testid="stBaseButton-secondary"] {
+    color: var(--brl-text) !important;
+    background: rgba(255, 255, 255, 0.035) !important;
+}
+[data-testid="stSidebar"] [data-testid="stBaseButton-secondary"]:hover {
+    background: rgba(130, 190, 184, 0.12) !important;
+    border-color: rgba(180, 211, 205, 0.2) !important;
+    box-shadow: none !important;
+}
+[data-testid="stSidebar"] [data-testid="stBaseButton-primary"] {
+    color: var(--brl-text) !important;
+    background: rgba(89, 160, 153, 0.23) !important;
+    border-color: rgba(157, 211, 203, 0.25) !important;
+    box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.08) !important;
+}
+[data-testid="stSidebar"] [data-testid="stBaseButton-primary"]:hover {
+    background: rgba(102, 182, 174, 0.3) !important;
+    border-color: rgba(157, 211, 203, 0.34) !important;
+}
+.brl-sidebar-footer, .brl-page-heading { border-color: rgba(180, 211, 205, 0.18); }
+[data-testid="stMetric"],
+[data-testid="stVerticalBlockBorderWrapper"],
+[data-testid="stExpander"],
+[data-testid="stForm"] {
+    border-color: rgba(180, 211, 205, 0.2) !important;
+    background: linear-gradient(145deg, rgba(34, 57, 61, 0.78), rgba(24, 42, 46, 0.76)) !important;
+    box-shadow: var(--brl-shadow-glass), inset 1px 1px 0 rgba(255, 255, 255, 0.045);
+}
+[data-testid="stSidebarContent"],
+[data-testid="stMetric"],
+[data-testid="stVerticalBlockBorderWrapper"],
+[data-testid="stExpander"],
+[data-testid="stForm"] {
+    background-image:
+        radial-gradient(ellipse at 12% 0%, rgba(210, 247, 241, 0.09), transparent 40%),
+        linear-gradient(118deg, rgba(199, 244, 238, 0.055), transparent 36%, rgba(134, 191, 201, 0.035) 72%, transparent) !important;
+}
+[data-testid="stExpander"]:hover {
+    background: linear-gradient(145deg, rgba(43, 69, 73, 0.88), rgba(27, 47, 51, 0.86)) !important;
+}
+input, textarea, [data-baseweb="select"] > div,
+[data-testid="stDateInput"] input, [data-testid="stNumberInput"] input {
+    color: var(--brl-text) !important;
+    background: rgba(15, 27, 30, 0.84) !important;
+    border-color: rgba(180, 211, 205, 0.23) !important;
+    box-shadow: var(--brl-shadow-inset) !important;
+}
+[data-testid="stSelectbox"] div:has(> input) {
+    color: var(--brl-text) !important;
+    background: rgba(15, 27, 30, 0.84) !important;
+}
+input::placeholder, textarea::placeholder { color: #a9bfbb !important; opacity: 0.82; }
+[data-testid="stFileUploader"] section {
+    border-color: rgba(140, 202, 195, 0.4);
+    background: rgba(24, 42, 46, 0.6);
+}
+[data-testid="stBaseButton-secondary"], button[kind="secondary"] {
+    color: var(--brl-text) !important;
+    border-color: rgba(180, 211, 205, 0.22) !important;
+    background: rgba(34, 57, 61, 0.72) !important;
+    box-shadow: 0 8px 20px rgba(0, 0, 0, 0.2), inset 1px 1px 0 rgba(255, 255, 255, 0.05) !important;
+}
+[data-testid="stBaseButton-secondary"]:hover, button[kind="secondary"]:hover {
+    background: rgba(50, 81, 84, 0.88) !important;
+    border-color: rgba(180, 211, 205, 0.34) !important;
+    box-shadow: 0 12px 24px rgba(0, 0, 0, 0.24) !important;
+}
+[data-baseweb="tab-list"], [role="tablist"] {
+    border-color: rgba(180, 211, 205, 0.2);
+    background: rgba(23, 40, 44, 0.66) !important;
+}
+[data-baseweb="tab"][aria-selected="true"], [role="tab"][aria-selected="true"] {
+    color: var(--brl-text) !important;
+    background: rgba(67, 111, 112, 0.48) !important;
+    border-color: rgba(180, 211, 205, 0.24) !important;
+    box-shadow: 0 6px 16px rgba(0, 0, 0, 0.2);
+}
+[data-testid="stDataFrame"], [data-testid="stTable"] {
+    border-color: rgba(180, 211, 205, 0.2);
+    background: rgba(23, 40, 44, 0.72);
+}
+[data-testid="stAlertContainer"] {
+    border-color: rgba(180, 211, 205, 0.18);
+    background: rgba(29, 48, 52, 0.82);
+}
+[data-testid="stAlertContentInfo"], [data-testid="stAlertContentInfo"] p {
+    color: var(--brl-info) !important;
+}
+.finding-card.severity-low, .badge-unlinked, .badge-review {
+    color: #d3ddda;
+    background: rgba(87, 99, 96, 0.48);
+    border-color: rgba(180, 211, 205, 0.18);
+}
+.badge-fail { border-color: rgba(255, 170, 161, 0.25); }
+.badge-pass { border-color: rgba(142, 211, 170, 0.25); }
+.badge-warning { border-color: rgba(240, 199, 126, 0.25); }
+.badge-error { color: var(--brl-fail); }
+.ai-disclosure, .demo-banner, .quote-box, .evidence-callout, .action-guidance {
+    border-color: rgba(180, 211, 205, 0.2);
+    color: var(--brl-text);
+    background: rgba(30, 50, 54, 0.78);
+}
+.ai-disclosure, .evidence-callout { color: #c6e2de; }
+.demo-banner { color: #ead2bf; }
+.action-guidance { color: #bde2ca; }
+.claim-id-pill { background: #287c7e; }
+hr { border-color: rgba(180, 211, 205, 0.2) !important; }
+code { color: #c4e6df; background: rgba(53, 89, 89, 0.55); }
+[role="listbox"] {
+    border-color: rgba(180, 211, 205, 0.22) !important;
+    background: #1b2d31 !important;
+    box-shadow: 0 18px 38px rgba(0, 0, 0, 0.32) !important;
+}
+[role="option"][aria-selected="true"], [role="option"][data-selected="true"] {
+    color: var(--brl-text) !important;
+    background: rgba(67, 111, 112, 0.56) !important;
+}
+</style>
+"""
+
 
 def inject_styles() -> None:
     """Inject the shared visual system into the current Streamlit page."""
-    st.markdown(BRAND_CSS, unsafe_allow_html=True)
+    dark_mode = st.session_state.get("brl_dark_mode", False)
+    st.markdown(
+        BRAND_CSS + (DARK_MODE_CSS if dark_mode else ""),
+        unsafe_allow_html=True,
+    )
 
 
 def ai_disclosure() -> None:
