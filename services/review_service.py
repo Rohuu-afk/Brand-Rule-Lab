@@ -880,6 +880,7 @@ def run_review(
     visual_metadata_provided = visual_metadata is not None
     visual_metadata = dict(visual_metadata or {})
     visual_metadata["external_ai_consent"] = bool(ai_consent)
+    submitted_image_bytes = visual_metadata.pop("submitted_image_bytes", None)
     if content_type is None:
         with get_connection() as conn:
             draft_scope = conn.execute(
@@ -939,7 +940,7 @@ def run_review(
                         "is_active": 1,
                         "owner_approved": 1,
                         "parameters": {
-                            "submitted_image_bytes": visual_metadata.get("submitted_image_bytes"),
+                            "submitted_image_bytes": submitted_image_bytes,
                             "approved_phash": approved_asset.get("perceptual_hash"),
                             "max_hamming_distance": 10,
                         },
