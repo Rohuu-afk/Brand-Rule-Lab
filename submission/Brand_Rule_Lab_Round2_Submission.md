@@ -35,6 +35,8 @@ Brand Rule Lab establishes role-based governance:
 
 ## 3. End-to-End Workflow (Draft → Check → Suggest → Approve → Ledger → Monitor)
 
+**First-time judge path:** The live demo opens without sign-in. From Overview, **Try a guided sample review** opens New Review with synthetic Monsoon product, market, channel, campaign brief, and intentionally problematic copy prefilled. The judge can run deterministic checks without enabling external AI; AI consent is off by default. Review findings and evidence are available in Review Results. Workspace setup is optional and is not required to try the core review workflow.
+
 1. **Brand Knowledge Onboarding:** Upload brand manuals, clinical studies, and product specification sheets (PDF, DOCX, TXT, XLSX, PNG, JPEG). Files are parsed locally (with Tesseract OCR when needed). AI extraction proposes source-quoted facts and guidelines with strict page/document provenance.
 2. **Rule Readiness Gate:** Reviewers audit rule proposals into four distinct readiness classes:
    - `CODE_CHECKABLE`: strictly verified against a whitelisted predicate (`term_list`, `regex`, `numeric_range`, `date_window`, `required_text`, `wcag_contrast`, `asset_hash`) with mandatory positive/negative self-tests. Only passing, human-approved rules enter the active `brand_rules` engine.
@@ -62,6 +64,7 @@ Brand Rule Lab establishes role-based governance:
 - [x] **Dual AI Provider Architecture:** Primary NVIDIA NIM (`nemotron-3-nano-omni-30b-a3b-reasoning`) with automatic graceful fallback to Google Gemini (`gemini-3.8-flash`) and offline resilience.
 - [x] **Verifiable Claim Ledger:** `stable_claim_id` minting, immutable text hashes, fact-version lineage tracking, and atomic SQL drift cascade.
 - [x] **Role-Based Workflows:** Separate Creator, Reviewer, and Fact Owner interfaces in Streamlit with immutable audit logging.
+- [x] **Judge-Friendly First-Use Flow:** Overview leads with a guided synthetic review; optional brand setup is clearly separated from the core content-review workflow.
 - [x] **Multi-format Ingestion:** Local parsing of PDF (PyMuPDF), DOCX (python-docx), XLSX (openpyxl), TXT, and image OCR (pytesseract & Pillow).
 - [x] **Visual & Accessibility Checks:** WCAG AA 4.5:1 contrast calculation, alt-text presence verification, and exact SHA-256 asset verification.
 - [x] **Synthetic Demonstration Suite:** Fully populated reference data for *Monsoon Beauty Co.* and *GlowUp* demonstrating V-04 (tone), T-12 (terminology), F-112 (clinical timeline), and offer expiration.
@@ -97,6 +100,7 @@ Brand Rule Lab establishes role-based governance:
 | **Evaluation Plan (Slide 10)** | `COMPLETED` | Reproducible evaluation suite verifying claim matching, drift cascade, and adversarial prompt-injection resistance. |
 | **Retrieval Architecture** | `REFINED` | **Change from Plan:** Round 1 mentioned exploring Chroma vector index. We chose **canonical SQLite scoped queries** for eligible fact retrieval. This avoids dual-store sync anomalies, eliminates external persistence risks, and guarantees strict product/market isolation. |
 | **AI Provider Resiliency** | `ENHANCED` | **Addition to Plan:** Integrated NVIDIA NIM as primary inference with seamless Google Gemini fallback and complete offline resilience (`NOT_OBSERVED` state instead of failure). |
+| **First-Use Judge Experience** | `IMPROVED` | **Addition to Plan:** Added a guided, prefilled synthetic review from Overview and clarified that workspace setup is optional, so judges can reach the central content-in/check/evidence-out workflow without a walkthrough. |
 
 ---
 
