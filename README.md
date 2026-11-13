@@ -4,7 +4,7 @@
 > *CodeNexus India 2026 — Round 3 submission*
 > Built by Team **rohitlongesha5** (Rohit Longesha)
 
-> **Event timing:** The official Round 3 window ended at 10:00 IST on 13 November 2026. This checkout is post-window work and cannot be represented as an on-time submission.
+> **Event timing:** The Round 3 submission form says submissions close at 11:59 pm IST on 13 November 2026, with no late window. Confirm that every required link is publicly accessible and submit before the deadline.
 
 Brand Rule Lab is an intelligent brand-governance platform that reviews content before publication and checks it against approved guidelines, facts, and assets. It catches off-brand tone, wrong terminology, unsupported claims, and inaccessible visuals before publishing, explains every finding, preserves creator intent, and keeps every approved claim cryptographically tied to the exact fact version that supports it.
 
@@ -104,6 +104,28 @@ The public **Open demo** role selector is intentionally opt-in. Enable
 name. Configure the four `DEMO_*_PASSWORD` values on that instance; only this
 synthetic isolated workspace displays those credentials. Never enable public
 demo access on a database containing real workspaces or accounts.
+
+For Streamlit Community Cloud, set the following as top-level app secrets on a
+separate judge-demo deployment; the app reads these settings at startup and
+creates missing synthetic demo accounts in that isolated database:
+
+```toml
+DATABASE_PATH = "data/judge_demo_round3.db"
+BRL_DEMO_ACCESS = "1"
+BRL_REQUIRE_SSO = "0"
+DEMO_CREATOR_PASSWORD = "<unique synthetic password>"
+DEMO_REVIEWER_PASSWORD = "<unique synthetic password>"
+DEMO_FACT_OWNER_PASSWORD = "<unique synthetic password>"
+DEMO_OWNER_PASSWORD = "<unique synthetic password>"
+```
+
+The configured demo usernames and passwords are intentionally displayed on
+the public landing page, so use unique, disposable credentials and never reuse
+them anywhere else. Do not put credentials in the repository or submission
+text. For email verification and team invitations, also configure
+`RESEND_API_KEY`, `EMAIL_FROM`, and `PUBLIC_APP_URL` as app secrets. Email
+sign-in uses the verified address attached to the account; without a working
+mail provider, users cannot complete email verification or receive invitations.
 
 ### Brand workspaces and invitations
 
