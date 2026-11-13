@@ -114,7 +114,15 @@ class Severity(str, Enum):
 
 
 class UserRole(str, Enum):
-    """Simulated demo roles — no real authentication."""
+    """Authenticated application roles."""
+    CREATOR = "Creator"
+    REVIEWER = "Reviewer"
+    FACT_OWNER = "Fact Owner"
+
+
+class BrandRole(str, Enum):
+    """Permissions granted by membership in one brand workspace."""
+    OWNER = "Brand Owner"
     CREATOR = "Creator"
     REVIEWER = "Reviewer"
     FACT_OWNER = "Fact Owner"

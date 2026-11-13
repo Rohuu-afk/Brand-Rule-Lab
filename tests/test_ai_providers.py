@@ -258,6 +258,7 @@ def isolated_review_database(monkeypatch, tmp_path):
 
     monkeypatch.setenv("DATABASE_PATH", str(tmp_path / "provider_review.db"))
     monkeypatch.setenv("UPLOADS_PATH", str(tmp_path / "uploads"))
+    monkeypatch.setenv("BRL_ENABLE_LEGACY_TEST_ACTORS", "1")
     apply_schema()
     seed()
 

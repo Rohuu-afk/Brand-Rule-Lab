@@ -1,12 +1,15 @@
-streamlit==1.66.1
+streamlit[auth]==1.66.1
 google-genai==2.34.0
 PyMuPDF==1.25.5
+rfc8785==0.1.4
 python-docx==1.1.2
 openpyxl==3.1.5
 pytesseract==0.3.13
 Pillow==13.0.0
+av==18.1.0
 python-dotenv==1.1.0
 jsonschema==4.23.0
 imagehash==4.3.2
+imageio-ffmpeg==0.8.1
 regex==2026.11.7
 pytest==8.3.5

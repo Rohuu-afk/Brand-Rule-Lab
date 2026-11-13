@@ -7,6 +7,9 @@ import json
 import streamlit as st
 
 from models.enums import RuleType, UserRole
+from models.enums import BrandRole
+from services.auth_service import AuthenticatedPrincipal
+from services.brand_service import require_brand_membership
 from services.knowledge_onboarding import (
     confirm_source_support,
     decide_knowledge_entry,
@@ -21,7 +24,7 @@ from services.rule_readiness import (
     save_rule_classification,
 )
 from ui.components import page_header
-from ui.styles import inject_styles
+from ui.styles import demo_banner, inject_styles
 
 
 _PREDICATE_DEFAULTS = {
@@ -91,7 +94,10 @@ _PREDICATE_DEFAULTS = {
 }
 
 
-def _render_source(entry: dict, actor: str, role_value: str | None = None) -> None:
+def _render_source(
+    entry: dict, actor: str, role_value: str | None,
+    principal: AuthenticatedPrincipal, brand_id: int,
+) -> None:
     if role_value is None:
         role_value = actor
     if not entry.get("source_quote"):
@@ -102,7 +108,10 @@ def _render_source(entry: dict, actor: str, role_value: str | None = None) -> No
         st.warning("Quotation location has not been verified on the selected page.")
         if st.button("Verify quotation location", key=f"verify_rule_quote_{entry['id']}"):
             try:
-                verify_source_quote_location(entry["id"], actor, actor_role=role_value)
+                verify_source_quote_location(
+                    entry["id"], actor, actor_role=role_value,
+                    principal=principal, brand_id=brand_id,
+                )
             except ValueError as exc:
                 st.error(str(exc))
             else:
@@ -122,7 +131,10 @@ def _render_source(entry: dict, actor: str, role_value: str | None = None) -> No
                     st.error("Confirm the statement above before recording source support.")
                 else:
                     try:
-                        confirm_source_support(entry["id"], actor, note, actor_role=role_value)
+                        confirm_source_support(
+                            entry["id"], actor, note, actor_role=role_value,
+                            principal=principal, brand_id=brand_id,
+                        )
                     except ValueError as exc:
                         st.error(str(exc))
                     else:
@@ -135,7 +147,8 @@ def _render_source(entry: dict, actor: str, role_value: str | None = None) -> No
         )
     if entry.get("document_id") and entry.get("source_page"):
         preview = get_original_page_preview(
-            entry["document_id"], int(entry["source_page"])
+            entry["document_id"], int(entry["source_page"]),
+            principal=principal, brand_id=brand_id,
         )
         if preview:
             st.image(
@@ -145,11 +158,17 @@ def _render_source(entry: dict, actor: str, role_value: str | None = None) -> No
             )
 
 
-def render(role: UserRole | str | None = None) -> None:
+def render(principal: AuthenticatedPrincipal) -> None:
     inject_styles()
-    role_value = role.value if isinstance(role, UserRole) else str(
-        role or st.session_state.get("sidebar_role", UserRole.CREATOR.value)
-    )
+    brand_id = st.session_state.get("active_brand_id")
+    try:
+        membership = require_brand_membership(
+            principal, brand_id, (BrandRole.OWNER, BrandRole.REVIEWER)
+        )
+    except PermissionError:
+        st.warning("Only workspace Reviewers can classify or approve rules.")
+        return
+    role_value = membership["role"]
     page_header("Governance", "Rule Readiness Audit")
     st.write(
         "Classify each source-backed rule before it can affect a content review. "
@@ -161,12 +180,12 @@ def render(role: UserRole | str | None = None) -> None:
         "**HUMAN JUDGEMENT** is stored for people and is not sent to automated enforcement. "
         "**UNCLEAR** proposals remain inactive until clarified."
     )
-    if role_value != UserRole.REVIEWER.value:
-        st.warning("Switch to the simulated Reviewer role to classify or approve rules.")
+    if role_value not in {BrandRole.OWNER.value, BrandRole.REVIEWER.value}:
+        st.warning("Only authenticated Reviewers can classify or approve rules.")
         return
 
     proposals = [
-        item for item in get_rule_proposals()
+        item for item in get_rule_proposals(principal, brand_id)
         if item["category"] in RULE_CATEGORIES
     ]
     pending = [
@@ -187,7 +206,10 @@ def render(role: UserRole | str | None = None) -> None:
                 + (f" · market {entry['market']}" if entry.get("market") else "")
             )
             st.write(entry["content"])
-            _render_source(entry, actor="reviewer_demo", role_value=role_value)
+            _render_source(
+                entry, actor=principal.username, role_value=role_value,
+                principal=principal, brand_id=brand_id,
+            )
             for warning in entry.get("warnings", []):
                 st.warning(warning)
             st.caption(f"Current method: {entry.get('rule_checking_method') or 'Not classified'}")
@@ -268,6 +290,7 @@ def render(role: UserRole | str | None = None) -> None:
                     save_rule_classification(
                         entry["id"], classification, role_value,
                         actor_role=role_value,
+                        principal=principal, brand_id=brand_id,
                         rule_type=rule_type, parameters=parameters, scope=scope,
                         severity=severity, positive_tests=positive_tests,
                         negative_tests=negative_tests, clarification_note=clarification,
@@ -288,12 +311,13 @@ def render(role: UserRole | str | None = None) -> None:
                     or not entry.get("source_support_confirmed")
                 ),
                 on_click=_approve,
-                args=(entry["id"], role_value),
+                args=(entry["id"], principal, brand_id, role_value),
             )
             if reject_col.button("Reject proposal", key=f"reject_readiness_{entry['id']}"):
                 try:
                     decide_knowledge_entry(
-                        entry["id"], "REJECT", role_value, actor_role=role_value
+                        entry["id"], "REJECT", principal.username,
+                        actor_role=role_value, principal=principal, brand_id=brand_id,
                     )
                 except (ValueError, PermissionError) as exc:
                     st.error(str(exc))
@@ -315,9 +339,11 @@ def render(role: UserRole | str | None = None) -> None:
             )
 
 
-def _approve(entry_id: int, actor: str) -> None:
+def _approve(entry_id: int, principal: AuthenticatedPrincipal, brand_id: int, actor: str) -> None:
     try:
-        result = approve_rule_proposal(entry_id, actor, actor_role=actor)
+        result = approve_rule_proposal(
+            entry_id, actor, actor_role=actor, principal=principal, brand_id=brand_id
+        )
     except (ValueError, PermissionError, TypeError, json.JSONDecodeError) as exc:
         st.error(str(exc))
     else:

@@ -20,7 +20,4 @@ def page_header(section: str, title: str) -> None:
 
 def section_heading(title: str) -> None:
     """Render a compact, consistent section heading."""
-    st.markdown(
-        f'<h2 class="brl-section-heading">{escape(title)}</h2>',
-        unsafe_allow_html=True,
-    )
+    st.subheader(title)

@@ -15,32 +15,35 @@ import streamlit as st
 from ui.styles import demo_banner, inject_styles
 from ui.presentation import humanize
 from ui.components import page_header
-from services.ledger_service import get_all_drafts, get_review_audit_trail, get_draft_with_versions
-from db.connection import get_connection
+from services.auth_service import AuthenticatedPrincipal
+from services.ledger_service import (
+    get_all_drafts, get_review_audit_trail, get_draft_with_versions,
+    get_review_events,
+)
 
 
-EVENT_ICONS = {
-    "SUBMITTED": "📬",
-    "APPROVED": "✅",
-    "CHANGES_REQUESTED": "🔄",
-    "ESCALATED": "🚨",
-    "OVERRIDE": "⚡",
-    "COMMENT": "💬",
+EVENT_LABELS = {
+    "SUBMITTED": "Submitted",
+    "APPROVED": "Approved",
+    "CHANGES_REQUESTED": "Changes requested",
+    "ESCALATED": "Escalated",
+    "OVERRIDE": "Reviewer override",
+    "COMMENT": "Comment",
 }
 
 EVENT_COLORS = {
-    "SUBMITTED": "#637B95",
-    "APPROVED": "#547A62",
-    "CHANGES_REQUESTED": "#997638",
-    "ESCALATED": "#9C4B4B",
-    "OVERRIDE": "#606068",
-    "COMMENT": "#77777D",
+    "SUBMITTED": "var(--brl-info, #637B95)",
+    "APPROVED": "var(--brl-pass, #547A62)",
+    "CHANGES_REQUESTED": "var(--brl-warning, #997638)",
+    "ESCALATED": "var(--brl-fail, #9C4B4B)",
+    "OVERRIDE": "var(--brl-text-muted, #606068)",
+    "COMMENT": "var(--brl-text-muted, #77777D)",
 }
 
 
 def _render_event_item(ev: dict, show_draft_title: bool = False):
     etype = ev.get("event_type", "UNKNOWN")
-    icon = EVENT_ICONS.get(etype, "📌")
+    event_label = EVENT_LABELS.get(etype, humanize(etype))
     color = EVENT_COLORS.get(etype, "#333333")
     actor = ev.get("actor", "system")
     created_at = ev.get("created_at", "—")
@@ -55,25 +58,26 @@ def _render_event_item(ev: dict, show_draft_title: bool = False):
             f"(id={html.escape(str(ev.get('draft_id', '?')))})"
         )
     draft_info_html = (
-        f'<div style="color:#555;font-size:12px;margin-top:2px;">{draft_info}</div>'
+        f'<div style="color:var(--brl-text-secondary,#555);font-size:11px;margin-top:2px;">{draft_info}</div>'
         if draft_info else ""
     )
 
     st.markdown(
-        f"<div style='border-left: 4px solid {color}; padding: 8px 12px; margin-bottom: 8px; background-color: #FAFAFA; border-radius: 0 4px 4px 0;'>"
-        f"<span style='font-size: 16px; margin-right: 6px;'>{icon}</span>"
-        f"<strong style='color:{color}; font-size: 14px;'>{html.escape(humanize(etype))}</strong> "
-        f"<span style='color: #666; font-size: 13px;'>by <code>{actor_html}</code></span>"
-        f"<span style='color: #999; font-size: 12px; float: right;'>🕒 {created_at_html}</span>"
-        f"{draft_info_html}"
-        f"</div>",
+        f"<div class='brl-event-card' style='border-left-color:{color};'>"
+        f"<strong style='color:{color};'>{html.escape(event_label)}</strong> "
+        f"<span>by <code>{actor_html}</code></span>"
+        f"<time>{created_at_html}</time>"
+        f"{draft_info_html}</div>",
         unsafe_allow_html=True,
     )
     if note:
-        st.markdown(f"> 💬 *\"{note}\"*")
+        st.markdown(
+            f'<div class="brl-event-note">{html.escape(str(note))}</div>',
+            unsafe_allow_html=True,
+        )
 
 
-def render():
+def render(principal: AuthenticatedPrincipal) -> None:
     inject_styles()
     page_header("Content Review", "Review History & Audit Trail")
     demo_banner()
@@ -83,7 +87,8 @@ def render():
         "change requests, escalations, and compliance comments across drafts."
     )
 
-    drafts = get_all_drafts()
+    brand_id = st.session_state.get("active_brand_id")
+    drafts = get_all_drafts(principal=principal, brand_id=brand_id)
     if not drafts:
         st.info("No drafts recorded yet. Create and check drafts in **New Review**.")
         return
@@ -110,22 +115,11 @@ def render():
 
     if selected_option is None:
         # Global timeline across all drafts
-        with get_connection() as conn:
-            all_events = [
-                dict(r)
-                for r in conn.execute(
-                    """
-                    SELECT re.*, r.reviewer, d.id AS draft_id, d.title AS draft_title, p.name AS product_name
-                    FROM review_events re
-                    JOIN reviews r ON r.id = re.review_id
-                    JOIN drafts d ON d.id = r.draft_id
-                    LEFT JOIN products p ON p.id = d.product_id
-                    ORDER BY re.created_at DESC
-                    """
-                ).fetchall()
-            ]
+        all_events = get_review_events(principal, brand_id)
 
-        st.subheader(f"🕒 Global Event Timeline ({len(all_events)} events)")
+        event_count = len(all_events)
+        event_word = "event" if event_count == 1 else "events"
+        st.subheader(f"Global event timeline · {event_count} {event_word}")
         if not all_events:
             st.info("No review events have been logged yet.")
             return
@@ -136,23 +130,33 @@ def render():
     else:
         selected_id = selected_option
 
-        draft_data = get_draft_with_versions(selected_id)
-        if draft_data:
-            c1, c2, c3, c4 = st.columns(4)
-            c1.metric("Status", humanize(draft_data["status"]))
-            c2.metric("Product", draft_data.get("product_name") or "Unassigned")
-            c3.metric("Draft Versions", len(draft_data.get("versions", [])))
-            c4.metric("Market / Channel", f"{draft_data.get('market','—')} / {draft_data.get('channel','—')}")
+        draft_data = get_draft_with_versions(
+            selected_id, principal=principal, brand_id=brand_id
+        )
+        if not draft_data:
+            st.info("This draft is no longer available in the selected workspace.")
+            return
+        c1, c2, c3, c4 = st.columns(4)
+        c1.metric("Status", humanize(draft_data["status"]))
+        c2.metric("Product", draft_data.get("product_name") or "Unassigned")
+        c3.metric("Draft versions", len(draft_data.get("versions", [])))
+        c4.metric(
+            "Market / channel",
+            f"{draft_data.get('market') or '—'} / {draft_data.get('channel') or '—'}",
+        )
 
-            with st.expander("📄 Draft Revision History", expanded=False):
-                for v in draft_data.get("versions", []):
-                    st.markdown(
-                        f"**Version {v['version_number']}** — Source: `{v['source_type']}` | Created: `{v['created_at']}`"
-                    )
-                    st.code(v["raw_text"], language=None)
+        with st.expander("Draft revision history", expanded=False):
+            for version in draft_data.get("versions", []):
+                st.markdown(
+                    f"**Version {version['version_number']}** — "
+                    f"Source: `{version['source_type']}` · Created: `{version['created_at']}`"
+                )
+                st.code(version["raw_text"], language=None)
 
-        events = get_review_audit_trail(selected_id)
-        st.subheader(f"🕒 Review Events for {draft_data['title']} ({len(events)} events)")
+        events = get_review_audit_trail(
+            selected_id, principal=principal, brand_id=brand_id
+        )
+        st.subheader(f"Review events for {draft_data['title']} ({len(events)} events)")
         if not events:
             st.info("No review events recorded yet. Submit the draft for review first.")
             return

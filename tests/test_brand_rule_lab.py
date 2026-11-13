@@ -130,6 +130,7 @@ def setup_test_db(tmp_path, monkeypatch):
     test_db = tmp_path / "test_brand_rule_lab.db"
     monkeypatch.setenv("DATABASE_PATH", str(test_db))
     monkeypatch.setenv("UPLOADS_PATH", str(tmp_path / "uploads"))
+    monkeypatch.setenv("BRL_ENABLE_LEGACY_TEST_ACTORS", "1")
     monkeypatch.delenv("GEMINI_API_KEY", raising=False)
     monkeypatch.delenv("NVIDIA_API_KEY", raising=False)
     monkeypatch.delenv("NVIDIA_MODEL", raising=False)
@@ -749,14 +750,9 @@ def test_role_gate_review_results_render_accepts_role_kwarg():
 
 
 def test_role_gate_navigation_pages_per_role():
-    """
-    Verify that PAGES in navigation.py assigns the correct page sets per role.
-    - Creator sees New Review; Reviewer and Fact Owner do not.
-    - Reviewer and Fact Owner see Approvals; Creator does not.
-    - All roles see Overview, Guidelines, Facts, Assets, Ledger, Insights.
-    """
+    """Keep the main navigation focused on each role's actual workflow."""
     from ui.navigation import PAGES
-    from models.enums import UserRole
+    from models.enums import BrandRole, UserRole
 
     creator_pages = PAGES[UserRole.CREATOR]
     reviewer_pages = PAGES[UserRole.REVIEWER]
@@ -772,16 +768,23 @@ def test_role_gate_navigation_pages_per_role():
     assert any("Approvals" in p for p in fo_pages), "Fact Owner must have Approvals"
     assert not any("Approvals" in p for p in creator_pages), "Creator must not have Approvals"
 
-    # Shared pages present for all roles
-    for role, pages in [(UserRole.CREATOR, creator_pages),
-                        (UserRole.REVIEWER, reviewer_pages),
-                        (UserRole.FACT_OWNER, fo_pages)]:
-        assert any("Overview" in p for p in pages), f"{role} must have Overview"
-        assert any("Guidelines" in p for p in pages), f"{role} must have Guidelines"
-        assert any("Facts" in p for p in pages), f"{role} must have Facts"
-        assert any("Assets" in p for p in pages), f"{role} must have Assets"
-        assert any("Ledger" in p for p in pages), f"{role} must have Ledger"
-        assert any("Insights" in p for p in pages), f"{role} must have Insights"
+    assert "Overview" in creator_pages
+    assert "Claim Ledger" in creator_pages
+    assert not any("Team" in page or "Audit" in page for page in creator_pages)
+
+    assert "Draft Approvals" in reviewer_pages
+    assert "Brand Guidelines" in reviewer_pages
+    assert "Audit & Exports" in reviewer_pages
+
+    assert "Fact Approvals" in fo_pages
+    assert "Products & Facts" in fo_pages
+    assert "Brand Assets" in fo_pages
+    assert "Audit & Exports" in fo_pages
+    assert not any("Team" in page for page in fo_pages)
+
+    owner_pages = PAGES[BrandRole.OWNER]
+    assert "Team & Permissions" in owner_pages
+    assert "CMS Draft Integrations" in owner_pages
 
 
 def test_service_mutations_require_the_matching_demo_role():
@@ -3792,6 +3795,7 @@ def test_judge_demo_builder_creates_synthetic_database_and_refuses_overwrite(tmp
     env = os.environ.copy()
     env["JUDGE_DEMO_DATABASE_PATH"] = str(demo_db)
     env["GEMINI_API_KEY"] = ""
+    env.pop("BRL_ENABLE_LEGACY_TEST_ACTORS", None)
     builder = project_root / "db" / "create_judge_demo.py"
 
     created = subprocess.run(
@@ -4250,7 +4254,7 @@ def test_schema_migration_is_versioned_and_idempotent():
         conflict_history = conn.execute(
             "SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'knowledge_conflict_history'"
         ).fetchone()
-    assert migration_versions == [1, 2, 3, 4, 5, 6, 7]
+    assert migration_versions == list(range(1, 18))
     assert "visual_identity" in profile_columns
     assert "ai_extraction_status" in document_columns
     assert "visual_metadata" in columns

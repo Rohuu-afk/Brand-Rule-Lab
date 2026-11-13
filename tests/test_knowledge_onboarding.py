@@ -87,6 +87,7 @@ def approve_rule_proposal(entry_id, actor):
 def onboarding_database(tmp_path, monkeypatch):
     monkeypatch.setenv("DATABASE_PATH", str(tmp_path / "onboarding.sqlite"))
     monkeypatch.setenv("UPLOADS_PATH", str(tmp_path / "uploads"))
+    monkeypatch.setenv("BRL_ENABLE_LEGACY_TEST_ACTORS", "1")
     apply_schema()
 
 

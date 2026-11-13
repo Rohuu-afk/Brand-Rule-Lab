@@ -193,6 +193,9 @@ def main() -> None:
 
     os.environ["DATABASE_PATH"] = str(demo_db)
     os.environ["UPLOADS_PATH"] = str(uploads_path)
+    # This standalone builder creates only synthetic fixtures in a new database.
+    # Service authorization recognizes this exact process, never the app server.
+    os.environ["BRL_ENABLE_SYNTHETIC_DEMO_ACTORS"] = "1"
     sys.path.insert(0, str(PROJECT_ROOT))
 
     from db.connection import apply_schema, get_connection

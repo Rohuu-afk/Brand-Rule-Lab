@@ -14,6 +14,7 @@ def test_image_review_keeps_bytes_out_of_saved_metadata(tmp_path, monkeypatch):
     database_path = tmp_path / "image-review.sqlite"
     monkeypatch.setenv("DATABASE_PATH", str(database_path))
     monkeypatch.setenv("UPLOADS_PATH", str(tmp_path / "uploads"))
+    monkeypatch.setenv("BRL_ENABLE_LEGACY_TEST_ACTORS", "1")
     apply_schema()
     seed()
 

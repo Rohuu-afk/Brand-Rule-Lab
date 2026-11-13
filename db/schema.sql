@@ -14,6 +14,116 @@
 PRAGMA journal_mode = WAL;
 
 -- ---------------------------------------------------------------
+-- users  (provisioned accounts; passwords are salted hashes)
+-- ---------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS users (
+    id            INTEGER PRIMARY KEY AUTOINCREMENT,
+    username      TEXT    NOT NULL COLLATE NOCASE UNIQUE,
+    password_hash TEXT    NOT NULL,
+    role          TEXT    NOT NULL CHECK(role IN ('Creator', 'Reviewer', 'Fact Owner')),
+    is_active     INTEGER NOT NULL DEFAULT 1 CHECK(is_active IN (0, 1)),
+    email         TEXT COLLATE NOCASE,
+    created_at    TEXT    NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ','now')),
+    updated_at    TEXT    NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ','now'))
+);
+
+CREATE INDEX IF NOT EXISTS idx_users_active_username
+    ON users(is_active, username);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_users_email
+    ON users(email) WHERE email IS NOT NULL;
+CREATE UNIQUE INDEX IF NOT EXISTS idx_users_oidc_subject
+    ON users(oidc_subject) WHERE oidc_subject IS NOT NULL;
+CREATE INDEX IF NOT EXISTS idx_auth_tokens_user_purpose
+    ON auth_tokens(user_id, purpose, expires_at);
+
+-- ---------------------------------------------------------------
+-- sessions  (opaque tokens are stored only as SHA-256 hashes)
+-- ---------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS sessions (
+    id         INTEGER PRIMARY KEY AUTOINCREMENT,
+    user_id    INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    token_hash TEXT    NOT NULL UNIQUE,
+    expires_at TEXT    NOT NULL,
+    revoked_at TEXT,
+    auth_method TEXT NOT NULL DEFAULT 'PASSWORD'
+               CHECK(auth_method IN ('PASSWORD','OIDC')),
+    created_at  TEXT    NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ','now'))
+);
+
+CREATE INDEX IF NOT EXISTS idx_sessions_user
+    ON sessions(user_id);
+
+CREATE INDEX IF NOT EXISTS idx_sessions_expiry
+    ON sessions(expires_at);
+
+-- ---------------------------------------------------------------
+-- audit_events  (append-only tamper-evident application events)
+-- ---------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS audit_events (
+    id              INTEGER PRIMARY KEY AUTOINCREMENT,
+    actor_user_id   INTEGER REFERENCES users(id) ON DELETE SET NULL,
+    actor_username  TEXT NOT NULL,
+    action          TEXT NOT NULL,
+    object_type     TEXT NOT NULL,
+    object_id       TEXT,
+    details_json    TEXT NOT NULL DEFAULT '{}',
+    previous_hash   TEXT,
+    event_hash      TEXT NOT NULL UNIQUE,
+    brand_id        INTEGER REFERENCES brands(id) ON DELETE SET NULL,
+    created_at      TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ','now'))
+);
+
+CREATE TRIGGER IF NOT EXISTS prevent_audit_event_update
+BEFORE UPDATE ON audit_events
+BEGIN
+    SELECT RAISE(ABORT, 'audit events are immutable');
+END;
+
+CREATE TRIGGER IF NOT EXISTS prevent_audit_event_delete
+BEFORE DELETE ON audit_events
+BEGIN
+    SELECT RAISE(ABORT, 'audit events are immutable');
+END;
+
+CREATE INDEX IF NOT EXISTS idx_audit_events_created
+    ON audit_events(created_at, id);
+
+CREATE INDEX IF NOT EXISTS idx_audit_events_object
+    ON audit_events(object_type, object_id);
+
+CREATE TABLE IF NOT EXISTS brands (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    name TEXT NOT NULL,
+    slug TEXT NOT NULL COLLATE NOCASE UNIQUE,
+    created_by_user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE RESTRICT,
+    created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ','now')),
+    is_active INTEGER NOT NULL DEFAULT 1 CHECK(is_active IN (0, 1))
+);
+
+CREATE TABLE IF NOT EXISTS brand_memberships (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    brand_id INTEGER NOT NULL REFERENCES brands(id) ON DELETE CASCADE,
+    user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    role TEXT NOT NULL CHECK(role IN ('Brand Owner','Creator','Reviewer','Fact Owner')),
+    created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ','now')),
+    updated_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ','now')),
+    UNIQUE(brand_id, user_id)
+);
+
+CREATE TABLE IF NOT EXISTS brand_invitations (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    brand_id INTEGER NOT NULL REFERENCES brands(id) ON DELETE CASCADE,
+    email TEXT NOT NULL COLLATE NOCASE,
+    role TEXT NOT NULL CHECK(role IN ('Creator','Reviewer','Fact Owner')),
+    token_hash TEXT NOT NULL UNIQUE,
+    invited_by_user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE RESTRICT,
+    expires_at TEXT NOT NULL,
+    accepted_at TEXT,
+    accepted_by_user_id INTEGER REFERENCES users(id) ON DELETE SET NULL,
+    created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ','now'))
+);
+
+-- ---------------------------------------------------------------
 -- products
 -- ---------------------------------------------------------------
 CREATE TABLE IF NOT EXISTS products (
@@ -23,6 +133,7 @@ CREATE TABLE IF NOT EXISTS products (
     sku_aliases TEXT    NOT NULL DEFAULT '[]',   -- JSON array of alias strings
     markets     TEXT    NOT NULL DEFAULT '[]',   -- JSON array e.g. ["IN","US"]
     description TEXT,
+    brand_id    INTEGER REFERENCES brands(id) ON DELETE SET NULL,
     created_at  TEXT    NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ','now'))
 );
 
@@ -41,6 +152,7 @@ CREATE TABLE IF NOT EXISTS guidelines (
     source_document_id INTEGER REFERENCES knowledge_documents(id) ON DELETE SET NULL,
     source_page TEXT,
     source_quote TEXT,
+    brand_id    INTEGER REFERENCES brands(id) ON DELETE SET NULL,
     created_at  TEXT    NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ','now'))
 );
 
@@ -71,6 +183,7 @@ CREATE TABLE IF NOT EXISTS brand_rules (
     source_document_id INTEGER REFERENCES knowledge_documents(id) ON DELETE SET NULL,
     source_page     TEXT,
     source_quote    TEXT,
+    brand_id        INTEGER REFERENCES brands(id) ON DELETE SET NULL,
     created_at      TEXT    NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ','now'))
 );
 
@@ -86,6 +199,7 @@ CREATE TABLE IF NOT EXISTS brand_assets (
     perceptual_hash TEXT,                       -- imagehash value as hex string
     sha256_hash TEXT,                           -- exact file hash
     metadata    TEXT    NOT NULL DEFAULT '{}',  -- JSON for colour values, etc.
+    brand_id    INTEGER REFERENCES brands(id) ON DELETE SET NULL,
     is_active   INTEGER NOT NULL DEFAULT 1,
     created_at  TEXT    NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ','now'))
 );
@@ -99,6 +213,7 @@ CREATE TABLE IF NOT EXISTS facts (
     name        TEXT    NOT NULL,
     category    TEXT    NOT NULL,              -- e.g. 'ingredient','claim','stat'
     markets     TEXT    NOT NULL DEFAULT '[]',
+    brand_id    INTEGER REFERENCES brands(id) ON DELETE SET NULL,
     created_at  TEXT    NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ','now'))
 );
 
@@ -136,6 +251,7 @@ CREATE TABLE IF NOT EXISTS campaign_briefs (
     key_messages    TEXT,                      -- JSON array of approved messages
     markets         TEXT    NOT NULL DEFAULT '[]',
     channels        TEXT    NOT NULL DEFAULT '[]',
+    brand_id        INTEGER REFERENCES brands(id) ON DELETE SET NULL,
     is_active       INTEGER NOT NULL DEFAULT 1,
     created_at      TEXT    NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ','now'))
 );
@@ -151,6 +267,8 @@ CREATE TABLE IF NOT EXISTS drafts (
     channel     TEXT,
     market      TEXT,
     submitted_by TEXT   NOT NULL DEFAULT 'demo_creator',
+    submitted_by_user_id INTEGER REFERENCES users(id) ON DELETE SET NULL,
+    brand_id    INTEGER REFERENCES brands(id) ON DELETE SET NULL,
     status      TEXT    NOT NULL DEFAULT 'DRAFT'
                 CHECK(status IN (
                     'DRAFT','CHECKED','READY_FOR_REVIEW',
@@ -229,6 +347,7 @@ CREATE TABLE IF NOT EXISTS reviews (
     id              INTEGER PRIMARY KEY AUTOINCREMENT,
     draft_id        INTEGER NOT NULL REFERENCES drafts(id) ON DELETE CASCADE,
     reviewer        TEXT    NOT NULL DEFAULT 'demo_reviewer',
+    reviewer_user_id INTEGER REFERENCES users(id) ON DELETE SET NULL,
     status          TEXT    NOT NULL DEFAULT 'OPEN'
                     CHECK(status IN (
                         'OPEN','APPROVED','CHANGES_REQUESTED','ESCALATED'
@@ -306,3 +425,34 @@ CREATE INDEX IF NOT EXISTS idx_approved_claims_drift   ON approved_claims(drift_
 CREATE INDEX IF NOT EXISTS idx_claim_fact_links_claim  ON claim_fact_links(approved_claim_id);
 CREATE INDEX IF NOT EXISTS idx_claim_fact_links_fv     ON claim_fact_links(fact_version_id);
 CREATE INDEX IF NOT EXISTS idx_finding_overrides_finding ON finding_overrides(finding_id, id);
+
+-- ---------------------------------------------------------------
+-- review_event_chain (per-draft tamper-evident hash chain)
+-- ---------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS review_event_chain (
+    event_id     INTEGER PRIMARY KEY REFERENCES review_events(id) ON DELETE RESTRICT,
+    draft_id     INTEGER NOT NULL REFERENCES drafts(id) ON DELETE RESTRICT,
+    sequence     INTEGER NOT NULL CHECK(sequence > 0),
+    payload_json TEXT    NOT NULL,
+    event_hash   TEXT    NOT NULL CHECK(length(event_hash) = 64),
+    UNIQUE(draft_id, sequence)
+);
+
+CREATE INDEX IF NOT EXISTS idx_review_event_chain_draft_sequence
+    ON review_event_chain(draft_id, sequence);
+
+CREATE TRIGGER IF NOT EXISTS prevent_review_event_update
+BEFORE UPDATE ON review_events
+BEGIN SELECT RAISE(ABORT, 'review events are append-only'); END;
+
+CREATE TRIGGER IF NOT EXISTS prevent_review_event_delete
+BEFORE DELETE ON review_events
+BEGIN SELECT RAISE(ABORT, 'review events are append-only'); END;
+
+CREATE TRIGGER IF NOT EXISTS prevent_review_event_chain_update
+BEFORE UPDATE ON review_event_chain
+BEGIN SELECT RAISE(ABORT, 'review event chain is append-only'); END;
+
+CREATE TRIGGER IF NOT EXISTS prevent_review_event_chain_delete
+BEFORE DELETE ON review_event_chain
+BEGIN SELECT RAISE(ABORT, 'review event chain is append-only'); END;

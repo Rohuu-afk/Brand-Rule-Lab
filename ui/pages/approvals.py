@@ -8,6 +8,8 @@ stable identifiers, linked fact versions, and real-time drift statuses.
 
 from __future__ import annotations
 
+import html
+
 import streamlit as st
 from ui.styles import demo_banner, inject_styles
 from ui.presentation import humanize
@@ -18,9 +20,10 @@ from services.approval_service import (
     get_claim_fact_links,
     get_snapshot_fact_links,
 )
+from services.auth_service import AuthenticatedPrincipal
 
 
-def render():
+def render(principal: AuthenticatedPrincipal) -> None:
     inject_styles()
     page_header("Governance", "Claim-to-Fact Ledger")
     demo_banner()
@@ -30,7 +33,10 @@ def render():
         "substantiating fact versions. If a fact changes or expires, drift is automatically flagged here."
     )
 
-    all_claims = get_approved_claims()
+    brand_id = st.session_state.get("active_brand_id")
+    all_claims = get_approved_claims(
+        principal=principal, brand_id=brand_id
+    )
     if not all_claims:
         st.info("No approved claims in ledger yet. Review and approve a draft in **Review Results**.")
         return
@@ -43,9 +49,9 @@ def render():
 
     m1, m2, m3, m4 = st.columns(4)
     m1.metric("Total Approved Claims", n_total)
-    m2.metric("🟢 Current", n_current)
-    m3.metric("🟡 Needs re-verification", n_review)
-    m4.metric("🔴 Expired", n_expired)
+    m2.metric("Active", n_current)
+    m3.metric("Needs re-verification", n_review)
+    m4.metric("Expired", n_expired)
 
     st.markdown("---")
 
@@ -92,22 +98,16 @@ def render():
 
     for claim in filtered_claims:
         drift = claim["drift_status"]
-        drift_icon = {
-            "CURRENT": "🟢",
-            "REVIEW_REQUIRED": "🟡",
-            "EXPIRED": "🔴",
-        }.get(drift, "⚪")
-
         status_badge_html = {
-            "CURRENT": "<span style='background-color:#E8F8F5;color:#117A65;padding:4px 10px;border-radius:12px;font-weight:bold;font-size:12px;'>🟢 Active & Verified</span>",
-            "REVIEW_REQUIRED": "<span style='background-color:#FEF9E7;color:#B7950B;padding:4px 10px;border-radius:12px;font-weight:bold;font-size:12px;'>🟡 Needs Re-verification</span>",
-            "EXPIRED": "<span style='background-color:#FDEDEC;color:#922B21;padding:4px 10px;border-radius:12px;font-weight:bold;font-size:12px;'>🔴 Evidence Expired</span>",
-        }.get(drift, f"<span>{drift}</span>")
+            "CURRENT": "<span class='badge badge-pass'>Active & Verified</span>",
+            "REVIEW_REQUIRED": "<span class='badge badge-warning'>Needs Re-verification</span>",
+            "EXPIRED": "<span class='badge badge-fail'>Evidence Expired</span>",
+        }.get(drift, f"<span class='badge badge-unlinked'>{drift}</span>")
 
         human_drift = humanize(drift)
 
         with st.expander(
-            f"{drift_icon} {claim['stable_claim_id']} — {claim.get('draft_title','Draft')} [{human_drift}]",
+            f"{claim['stable_claim_id']} — {claim.get('draft_title','Draft')} [{human_drift}]",
             expanded=(drift != "CURRENT"),
         ):
             c_header, c_status = st.columns([3, 2])
@@ -116,38 +116,24 @@ def render():
             with c_status:
                 st.markdown(status_badge_html, unsafe_allow_html=True)
 
-            st.markdown(f"**Approved Marketing Claim:**\n> {claim['approved_text']}")
-
-            # Cryptographic hash and provenance
-            h_col1, h_col2 = st.columns(2)
-            with h_col1:
-                st.caption(f"**Normalized Text Hash (SHA-256):**")
-                st.code(claim.get("approved_text_hash", "N/A"), language=None)
-            with h_col2:
-                st.caption(f"**Stable Traceable Identifier:**")
-                st.code(claim["stable_claim_id"], language=None)
-
-            # Metadata provenance bar
-            st.caption(
-                f"👤 **Approved by:** `{claim.get('approved_by', 'demo_reviewer')}` &nbsp;|&nbsp; "
-                f"🕒 **Approved at:** `{claim.get('approved_at', 'N/A')}` &nbsp;|&nbsp; "
-                f"📦 **Product:** `{claim.get('product_name', 'N/A')}` &nbsp;|&nbsp; "
-                f"📄 **Origin Draft ID:** `#{claim.get('draft_id', 'N/A')}`"
+            st.markdown("**Approved wording**")
+            st.markdown(
+                f'<div class="quote-box">{html.escape(str(claim["approved_text"]))}</div>',
+                unsafe_allow_html=True,
             )
+            meta_product, meta_reviewer, meta_date = st.columns(3)
+            meta_product.caption(f"Product · {claim.get('product_name') or 'Unassigned'}")
+            meta_reviewer.caption(f"Approved by · {claim.get('approved_by') or 'Not recorded'}")
+            meta_date.caption(f"Approved at · {claim.get('approved_at') or 'Not recorded'}")
 
             # Linked fact versions
-            fact_links = get_claim_fact_links(claim["id"])
-            st.markdown("#### 🔗 Linked Fact Versions (Exact Audit Provenance)")
+            fact_links = get_claim_fact_links(
+                claim["id"], principal=principal, brand_id=brand_id
+            )
+            st.markdown("#### Evidence linked to this claim")
             if fact_links:
                 for fl in fact_links:
                     fv_status = fl.get("approval_status", "?")
-                    fv_icon = {
-                        "APPROVED": "🟢",
-                        "EXPIRED": "🔴",
-                        "PENDING_APPROVAL": "🟡",
-                        "REJECTED": "⚫",
-                    }.get(fv_status, "⚪")
-
                     human_fv = {
                         "APPROVED": "Active & Approved",
                         "EXPIRED": "Evidence expired",
@@ -155,17 +141,32 @@ def render():
                         "REJECTED": "Rejected",
                     }.get(fv_status, fv_status)
 
-                    st.markdown(
-                        f"- {fv_icon} **{fl['fact_name']}** — "
-                        f"**Version {fl['version_number']}** `[{human_fv}]`\n"
-                        f"  > *\"{fl['statement']}\"*\n"
-                        f"  *Evidence Reference: {fl.get('evidence_ref', 'N/A')}*"
-                    )
+                    with st.container(border=True):
+                        st.markdown(
+                            f"**{fl['fact_name']} · Version {fl['version_number']}** "
+                            f"— {human_fv}"
+                        )
+                        st.markdown(
+                            f'<div class="quote-box">{html.escape(str(fl["statement"]))}</div>',
+                            unsafe_allow_html=True,
+                        )
+                        st.caption(
+                            f"Evidence reference · {fl.get('evidence_ref') or 'Not recorded'}"
+                        )
             else:
-                st.info("ℹ️ No fact versions linked to this claim.")
+                st.info("No approved fact versions are linked to this claim.")
                 st.caption("No individual fact versions explicitly linked.")
 
-            snapshots = get_claim_approval_snapshots(claim["id"])
+            with st.expander("Traceability details"):
+                st.caption("Stable claim ID")
+                st.code(claim["stable_claim_id"], language=None)
+                st.caption("Approved wording hash · SHA-256")
+                st.code(claim.get("approved_text_hash") or "Not recorded", language=None)
+                st.caption(f"Originating draft · #{claim.get('draft_id', 'Not recorded')}")
+
+            snapshots = get_claim_approval_snapshots(
+                claim["id"], principal=principal, brand_id=brand_id
+            )
             if snapshots:
                 with st.expander(f"Approval history ({len(snapshots)} snapshot(s))"):
                     for snapshot in snapshots:
@@ -174,7 +175,9 @@ def render():
                             f"Reviewer: `{snapshot['reviewer']}` · Market: `{snapshot.get('market') or 'Unspecified'}`"
                         )
                         st.write(snapshot["approved_text"])
-                        historical_links = get_snapshot_fact_links(snapshot["id"])
+                        historical_links = get_snapshot_fact_links(
+                            snapshot["id"], principal=principal, brand_id=brand_id
+                        )
                         if historical_links:
                             for link in historical_links:
                                 st.caption(

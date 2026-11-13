@@ -11,12 +11,14 @@ from __future__ import annotations
 
 import streamlit as st
 from db.connection import get_connection
+from services.auth_service import AuthenticatedPrincipal, require_legacy_test_actor
+from services.brand_service import require_brand_membership
 from ui.styles import demo_banner, inject_styles
 from ui.presentation import humanize
 from ui.components import page_header
 
 
-def _render_bar_visual(chart_dict: dict[str, int], color: str = "#55555B") -> None:
+def _render_bar_visual(chart_dict: dict[str, int], color: str = "var(--brl-dark, #19777D)") -> None:
     """
     Render a clean horizontal bar distribution without pyarrow dependency.
     Prevents Windows Code Integrity / WDAC policy DLL blocks from interrupting UI rendering.
@@ -30,13 +32,13 @@ def _render_bar_visual(chart_dict: dict[str, int], color: str = "#55555B") -> No
     for label, count in chart_dict.items():
         pct = max(5, int((count / max_val) * 100))
         html.append(
-            f'<div style="margin-bottom: 8px;">'
+            f'<div style="margin-bottom: 10px;">'
             f'  <div style="display: flex; justify-content: space-between; font-size: 12px; margin-bottom: 2px;">'
-            f'    <span style="font-weight: 500;">{label}</span>'
-            f'    <span style="color: #64748B; font-weight: 600;">{count}</span>'
+            f'    <span style="font-weight: 500; color: var(--brl-text,#20383B);">{label}</span>'
+            f'    <span style="color: var(--brl-text-secondary,#294448); font-weight: 600;">{count}</span>'
             f'  </div>'
-            f'  <div style="background-color: #E2E8F0; border-radius: 4px; height: 8px; width: 100%;">'
-            f'    <div style="background-color: {color}; height: 8px; border-radius: 4px; width: {pct}%;"></div>'
+            f'  <div style="background: var(--brl-bg-secondary,#D8E9E8); border-radius: 6px; height: 7px; width: 100%;">'
+            f'    <div style="background: {color}; height: 7px; border-radius: 6px; width: {pct}%;"></div>'
             f'  </div>'
             f'</div>'
         )
@@ -44,48 +46,87 @@ def _render_bar_visual(chart_dict: dict[str, int], color: str = "#55555B") -> No
     st.markdown("".join(html), unsafe_allow_html=True)
 
 
-def _query_db_insights() -> dict:
+def _query_db_insights(
+    principal: AuthenticatedPrincipal | None = None, brand_id: int | None = None,
+) -> dict:
     """Execute real-time analytical aggregation queries directly on SQLite."""
+    if principal is not None:
+        if brand_id is None:
+            raise ValueError("A brand is required for authenticated insights.")
+        require_brand_membership(principal, brand_id)
+        draft_filter = "d.brand_id = ?"
+        draft_params = (brand_id,)
+    else:
+        # Retain this private legacy query only for explicitly opted-in pytest
+        # fixtures. Every application route must provide a session principal.
+        require_legacy_test_actor("read unscoped UI analytics")
+        draft_filter = "1 = 1"
+        draft_params = ()
+    finding_join = (
+        " JOIN draft_versions dv ON dv.id = f.draft_version_id"
+        " JOIN drafts d ON d.id = dv.draft_id"
+    )
+    event_join = (
+        " JOIN reviews r ON r.id = re.review_id"
+        " JOIN drafts d ON d.id = r.draft_id"
+    )
     with get_connection() as conn:
         # Totals
-        total_drafts = conn.execute("SELECT COUNT(*) AS n FROM drafts").fetchone()["n"]
-        total_reviews = conn.execute("SELECT COUNT(*) AS n FROM reviews").fetchone()["n"]
-        total_findings = conn.execute("SELECT COUNT(*) AS n FROM findings").fetchone()["n"]
-        total_claims = conn.execute("SELECT COUNT(*) AS n FROM approved_claims").fetchone()["n"]
+        total_drafts = conn.execute(
+            "SELECT COUNT(*) AS n FROM drafts d WHERE " + draft_filter, draft_params
+        ).fetchone()["n"]
+        total_reviews = conn.execute(
+            "SELECT COUNT(*) AS n FROM reviews r JOIN drafts d ON d.id = r.draft_id WHERE "
+            + draft_filter, draft_params,
+        ).fetchone()["n"]
+        total_findings = conn.execute(
+            "SELECT COUNT(*) AS n FROM findings f" + finding_join + " WHERE " + draft_filter,
+            draft_params,
+        ).fetchone()["n"]
+        total_claims = conn.execute(
+            "SELECT COUNT(*) AS n FROM approved_claims ac JOIN drafts d ON d.id = ac.draft_id WHERE "
+            + draft_filter, draft_params,
+        ).fetchone()["n"]
 
         # Findings by result
         rows = conn.execute(
-            "SELECT result, COUNT(*) AS n FROM findings GROUP BY result ORDER BY n DESC"
+            "SELECT f.result, COUNT(*) AS n FROM findings f" + finding_join +
+            " WHERE " + draft_filter + " GROUP BY f.result ORDER BY n DESC", draft_params
         ).fetchall()
         findings_by_result = {r["result"]: r["n"] for r in rows}
 
         # Findings by severity
         rows = conn.execute(
-            "SELECT severity, COUNT(*) AS n FROM findings GROUP BY severity ORDER BY n DESC"
+            "SELECT f.severity, COUNT(*) AS n FROM findings f" + finding_join +
+            " WHERE " + draft_filter + " GROUP BY f.severity ORDER BY n DESC", draft_params
         ).fetchall()
         findings_by_severity = {r["severity"]: r["n"] for r in rows}
 
         # Creator actions breakdown (Finding status)
         rows = conn.execute(
-            "SELECT status, COUNT(*) AS n FROM findings GROUP BY status ORDER BY n DESC"
+            "SELECT f.status, COUNT(*) AS n FROM findings f" + finding_join +
+            " WHERE " + draft_filter + " GROUP BY f.status ORDER BY n DESC", draft_params
         ).fetchall()
         creator_actions = {r["status"]: r["n"] for r in rows}
 
         # Review outcomes (Reviews status)
         rows = conn.execute(
-            "SELECT status, COUNT(*) AS n FROM reviews GROUP BY status ORDER BY n DESC"
+            "SELECT r.status, COUNT(*) AS n FROM reviews r JOIN drafts d ON d.id = r.draft_id WHERE "
+            + draft_filter + " GROUP BY r.status ORDER BY n DESC", draft_params
         ).fetchall()
         review_outcomes = {r["status"]: r["n"] for r in rows}
 
         # Drafts by status
         rows = conn.execute(
-            "SELECT status, COUNT(*) AS n FROM drafts GROUP BY status ORDER BY n DESC"
+            "SELECT d.status, COUNT(*) AS n FROM drafts d WHERE " + draft_filter +
+            " GROUP BY d.status ORDER BY n DESC", draft_params
         ).fetchall()
         drafts_by_status = {r["status"]: r["n"] for r in rows}
 
         # Approved claims by drift status
         rows = conn.execute(
-            "SELECT drift_status, COUNT(*) AS n FROM approved_claims GROUP BY drift_status ORDER BY n DESC"
+            "SELECT ac.drift_status, COUNT(*) AS n FROM approved_claims ac JOIN drafts d ON d.id = ac.draft_id WHERE "
+            + draft_filter + " GROUP BY ac.drift_status ORDER BY n DESC", draft_params
         ).fetchall()
         claims_by_drift = {r["drift_status"]: r["n"] for r in rows}
 
@@ -95,11 +136,12 @@ def _query_db_insights() -> dict:
             SELECT br.id, br.name, br.severity, br.rule_type, COUNT(*) AS fail_count
             FROM findings f
             JOIN brand_rules br ON br.id = f.rule_id
-            WHERE f.result = 'FAIL'
+            """ + finding_join + """
+            WHERE f.result = 'FAIL' AND """ + draft_filter + """
             GROUP BY f.rule_id
             ORDER BY fail_count DESC
             LIMIT 5
-            """
+            """, draft_params
         ).fetchall()
         top_violated_rules = [dict(r) for r in rows]
 
@@ -109,63 +151,73 @@ def _query_db_insights() -> dict:
             SELECT br.id, br.name, COUNT(*) AS dismiss_count
             FROM findings f
             JOIN brand_rules br ON br.id = f.rule_id
-            WHERE f.status = 'DISMISSED'
+            """ + finding_join + """
+            WHERE f.status = 'DISMISSED' AND """ + draft_filter + """
             GROUP BY f.rule_id
             ORDER BY dismiss_count DESC
             LIMIT 5
-            """
+            """, draft_params
         ).fetchall()
         top_dismissed_rules = [dict(r) for r in rows]
 
         # Fact versions summary
         rows = conn.execute(
-            "SELECT approval_status, COUNT(*) AS n FROM fact_versions GROUP BY approval_status"
+            "SELECT fv.approval_status, COUNT(*) AS n FROM fact_versions fv "
+            "JOIN facts f ON f.id = fv.fact_id JOIN products p ON p.id = f.product_id "
+            + ("WHERE p.brand_id = ? " if principal is not None else "")
+            + "GROUP BY fv.approval_status", draft_params
         ).fetchall()
         fact_versions_by_status = {r["approval_status"]: r["n"] for r in rows}
 
         clarification_requests = conn.execute(
             """
-            SELECT COUNT(*) AS n FROM review_events
+            SELECT COUNT(*) AS n FROM review_events re
+            """ + event_join + """
             WHERE event_type = 'ESCALATED'
-              AND note LIKE 'GUIDELINE_CLARIFICATION:%'
-            """
+              AND note LIKE 'GUIDELINE_CLARIFICATION:%' AND """ + draft_filter,
+            draft_params,
         ).fetchone()["n"]
         override_reasons = conn.execute(
             """
-            SELECT COUNT(*) AS n FROM review_events
+            SELECT COUNT(*) AS n FROM review_events re
+            """ + event_join + """
             WHERE event_type = 'OVERRIDE' AND length(trim(COALESCE(note, ''))) > 0
-            """
+              AND """ + draft_filter,
+            draft_params,
         ).fetchone()["n"]
         repeated_change_requests = conn.execute(
             """
             SELECT COUNT(*) AS n FROM (
                 SELECT r.draft_id
                 FROM review_events e JOIN reviews r ON r.id = e.review_id
-                WHERE e.event_type = 'CHANGES_REQUESTED'
+                JOIN drafts d ON d.id = r.draft_id
+                WHERE e.event_type = 'CHANGES_REQUESTED' AND """ + draft_filter + """
                 GROUP BY r.draft_id
                 HAVING COUNT(*) > 1
             )
-            """
+            """, draft_params
         ).fetchone()["n"]
         repeated_dismissal_rules = conn.execute(
             """
             SELECT COUNT(*) AS n FROM (
-                SELECT rule_id FROM findings
-                WHERE status = 'DISMISSED' AND rule_id IS NOT NULL
-                GROUP BY rule_id
+                SELECT f.rule_id FROM findings f
+                """ + finding_join + """
+                WHERE f.status = 'DISMISSED' AND f.rule_id IS NOT NULL AND """ + draft_filter + """
+                GROUP BY f.rule_id
                 HAVING COUNT(*) > 1
             )
-            """
+            """, draft_params
         ).fetchone()["n"]
         unlinked_claims = conn.execute(
             """
             SELECT COUNT(DISTINCT cm.id) AS n
             FROM claim_mentions cm
             JOIN findings f ON f.claim_mention_id = cm.id
+            """ + finding_join + """
             WHERE f.finding_type = 'fact_match'
               AND (f.evidence_relationship IS NULL OR f.evidence_relationship != 'SUPPORTS'
-                   OR f.fact_version_id IS NULL)
-            """
+                   OR f.fact_version_id IS NULL) AND """ + draft_filter,
+            draft_params,
         ).fetchone()["n"]
 
     return {
@@ -190,7 +242,7 @@ def _query_db_insights() -> dict:
     }
 
 
-def render():
+def render(principal: AuthenticatedPrincipal) -> None:
     inject_styles()
     page_header("Governance", "Insights")
     demo_banner()
@@ -200,7 +252,8 @@ def render():
         "No hardcoded statistics or synthetic values are used."
     )
 
-    data = _query_db_insights()
+    brand_id = st.session_state.get("active_brand_id")
+    data = _query_db_insights(principal, brand_id)
 
     # ---- High Level Overview KPI Grid ----
     c1, c2, c3, c4 = st.columns(4)

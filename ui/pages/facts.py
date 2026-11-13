@@ -12,8 +12,8 @@ import streamlit as st
 from ui.styles import demo_banner, inject_styles
 from ui.presentation import humanize
 from ui.components import page_header
-from models.enums import UserRole
-from services.guideline_service import get_all_products
+from models.enums import BrandRole, UserRole
+from services.guideline_service import create_product, get_all_products
 from services.fact_service import (
     get_all_facts,
     get_fact_versions,
@@ -23,27 +23,60 @@ from services.fact_service import (
     expire_fact_version,
     import_facts_csv,
 )
+from services.auth_service import AuthenticatedPrincipal
+from services.brand_service import require_brand_membership
 
 
-def render(role: UserRole | None = None):
+def render(
+    role: UserRole | None = None,
+    principal: AuthenticatedPrincipal | None = None,
+):
     inject_styles()
     page_header("Workspace", "Products & Facts")
     demo_banner()
 
-    is_fact_owner = (role == UserRole.FACT_OWNER)
-
+    brand_id = st.session_state.get("active_brand_id")
+    if principal is not None:
+        membership = require_brand_membership(principal, brand_id)
+        role = membership["role"]
+    is_fact_owner = role in {BrandRole.OWNER.value, BrandRole.FACT_OWNER.value}
     if not is_fact_owner:
-        st.info(
-            "ℹ️ You are viewing facts in read-only mode. "
-            "Switch to **Fact Owner** role in the sidebar to create, approve, or expire fact versions."
-        )
+        st.info("You are viewing facts in read-only mode. A workspace Fact Owner manages evidence versions.")
     else:
         st.caption(
-            "ℹ️ Fact versions are **immutable** — once created they cannot be edited. "
-            "To update a fact, create a new version. Expiring a version flags all dependent approved claims."
+            "Fact versions are immutable. Create a new version to update evidence; expiring a version flags linked claims."
         )
-
-    products = get_all_products()
+    products = get_all_products(principal=principal, brand_id=brand_id)
+    if role == BrandRole.OWNER.value:
+        with st.expander("Add a product", expanded=not products):
+            with st.form("create_product_form"):
+                product_name = st.text_input("Product name")
+                product_aliases = st.text_input(
+                    "SKU or aliases (comma separated)",
+                    help="Optional names or SKUs that identify this product.",
+                )
+                product_markets = st.multiselect(
+                    "Markets served", ["IN", "US", "GB", "AU", "SG"]
+                )
+                product_description = st.text_area("Product description (optional)")
+                create_product_submitted = st.form_submit_button(
+                    "Create product", type="primary"
+                )
+            if create_product_submitted:
+                try:
+                    product_id = create_product(
+                        product_name,
+                        sku_aliases=product_aliases.split(","),
+                        markets=product_markets,
+                        description=product_description,
+                        principal=principal,
+                        brand_id=brand_id,
+                    )
+                except (ValueError, PermissionError) as exc:
+                    st.error(str(exc))
+                else:
+                    st.success(f"Product created (id={product_id}). You can now add facts and evidence.")
+                    st.rerun()
     if is_fact_owner:
         with st.expander("Import facts from CSV", expanded=False):
             st.caption(
@@ -57,7 +90,8 @@ def render(role: UserRole | None = None):
                     st.error("Choose a CSV file first.")
                 else:
                     outcome = import_facts_csv(
-                        csv_upload.getvalue().decode("utf-8-sig"), actor_role=role
+                        csv_upload.getvalue().decode("utf-8-sig"), actor_role=role,
+                        principal=principal, brand_id=brand_id,
                     )
                     if outcome["errors"]:
                         for error in outcome["errors"]:
@@ -72,26 +106,28 @@ def render(role: UserRole | None = None):
     selected_product_name = st.selectbox("Filter by product", list(product_options.keys()))
     product_id = product_options[selected_product_name]
 
-    facts = get_all_facts(product_id=product_id)
+    facts = get_all_facts(product_id=product_id, principal=principal, brand_id=brand_id)
 
     st.markdown(f"**{len(facts)} fact(s) found**")
     if not facts:
         st.info("No facts found for the selected filter.")
 
     for fact in facts:
-        versions = get_fact_versions(fact["id"])
+        versions = get_fact_versions(fact["id"], principal=principal, brand_id=brand_id)
         with st.expander(
-            f"📌 {fact['name']} [{fact['category']}] — {len(versions)} version(s)",
+            f"{fact['name']} [{fact['category']}] — {len(versions)} version(s)",
             expanded=False,
         ):
             for v in versions:
-                status_color = {
-                    "APPROVED": "🟢", "PENDING_APPROVAL": "🟡",
-                    "REJECTED": "🔴", "EXPIRED": "⚫",
-                }.get(v["approval_status"], "⚪")
+                badge_cls = {
+                    "APPROVED": "badge-pass",
+                    "PENDING_APPROVAL": "badge-warning",
+                    "REJECTED": "badge-fail",
+                    "EXPIRED": "badge-fail",
+                }.get(v["approval_status"], "badge-review")
                 st.markdown(
-                    f"{status_color} **Version {v['version_number']}** — "
-                    f"{humanize(v['approval_status'])}"
+                    f"<span class='badge {badge_cls}'>Version {v['version_number']} · {humanize(v['approval_status'])}</span>",
+                    unsafe_allow_html=True,
                 )
                 st.write(v["statement"])
 
@@ -112,9 +148,11 @@ def render(role: UserRole | None = None):
                     col1, col2 = st.columns(2)
                     if v["approval_status"] == "PENDING_APPROVAL":
                         if col1.button(
-                            "✅ Approve", key=f"approve_fv_{v['id']}", type="primary"
+                            "Approve version", key=f"approve_fv_{v['id']}", type="primary"
                         ):
-                            affected = approve_fact_version(v["id"], actor_role=role)
+                            affected = approve_fact_version(
+                                v["id"], principal=principal, brand_id=brand_id
+                            )
                             if affected:
                                 st.warning(
                                     f"Fact version approved. {affected} dependent claim(s) need re-verification."
@@ -125,9 +163,11 @@ def render(role: UserRole | None = None):
 
                     if v["approval_status"] == "APPROVED":
                         if col2.button(
-                            "⏹️ Expire", key=f"expire_fv_{v['id']}"
+                            "Expire version", key=f"expire_fv_{v['id']}"
                         ):
-                            n = expire_fact_version(v["id"], actor_role=role)
+                            n = expire_fact_version(
+                                v["id"], principal=principal, brand_id=brand_id
+                            )
                             msg = f"Fact version expired. {n} dependent claim(s) flagged." if n else "Fact version expired."
                             st.warning(msg)
                             st.rerun()
@@ -137,7 +177,7 @@ def render(role: UserRole | None = None):
             # Create new version form: ONLY visible to FACT_OWNER
             if is_fact_owner:
                 with st.form(key=f"new_version_form_{fact['id']}"):
-                    st.markdown("**➕ Create New Version**")
+                    st.markdown("**Create new version**")
                     new_statement = st.text_area("New fact statement", key=f"nv_stmt_{fact['id']}")
                     new_evidence = st.text_input("Evidence reference", key=f"nv_ev_{fact['id']}")
                     valid_from = st.date_input("Valid from (optional)", value=None, key=f"nv_vf_{fact['id']}")
@@ -153,7 +193,7 @@ def render(role: UserRole | None = None):
                                 new_evidence.strip(),
                                 str(valid_from) if valid_from else None,
                                 str(valid_until) if valid_until else None,
-                                actor_role=role,
+                                principal=principal, brand_id=brand_id,
                             )
                             st.success("New fact version created. It is waiting for approval.")
                             st.rerun()
@@ -161,23 +201,28 @@ def render(role: UserRole | None = None):
     # Create new fact form: ONLY visible to FACT_OWNER
     if is_fact_owner:
         st.markdown("---")
-        st.subheader("➕ Create New Fact")
-        with st.form("new_fact_form"):
-            pid_opts = {p["name"]: p["id"] for p in products}
-            p_name = st.selectbox("Product", list(pid_opts.keys()), key="nf_prod")
-            f_name = st.text_input("Fact name")
-            f_cat = st.selectbox(
-                "Category",
-                ["ingredient", "efficacy_claim", "product_specification", "statistic", "other"],
-            )
-            f_markets = st.multiselect("Markets", ["IN", "US", "GB", "AU", "SG"])
-            if st.form_submit_button("Create Fact"):
-                if not f_name.strip():
-                    st.error("Fact name required.")
-                else:
-                    new_fid = create_fact(
-                        pid_opts[p_name], f_name.strip(), f_cat, f_markets,
-                        actor_role=role,
-                    )
-                    st.success(f"Fact created (id={new_fid}). Add a version above.")
-                    st.rerun()
+        st.subheader("Create a new fact")
+        pid_opts = {p["name"]: p["id"] for p in products}
+        if not pid_opts:
+            st.info("Create a product before adding facts.")
+        else:
+            if st.session_state.get("nf_prod") not in pid_opts:
+                st.session_state["nf_prod"] = next(iter(pid_opts))
+            with st.form("new_fact_form"):
+                p_name = st.selectbox("Product", list(pid_opts.keys()), key="nf_prod")
+                f_name = st.text_input("Fact name")
+                f_cat = st.selectbox(
+                    "Category",
+                    ["ingredient", "efficacy_claim", "product_specification", "statistic", "other"],
+                )
+                f_markets = st.multiselect("Markets", ["IN", "US", "GB", "AU", "SG"])
+                if st.form_submit_button("Create Fact"):
+                    if not f_name.strip():
+                        st.error("Fact name required.")
+                    else:
+                        new_fid = create_fact(
+                            pid_opts[p_name], f_name.strip(), f_cat, f_markets,
+                            principal=principal, brand_id=brand_id,
+                        )
+                        st.success(f"Fact created (id={new_fid}). Add a version above.")
+                        st.rerun()

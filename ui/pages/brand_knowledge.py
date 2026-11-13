@@ -7,9 +7,11 @@ from pathlib import Path
 
 import streamlit as st
 
-from models.enums import UserRole
+from models.enums import BrandRole, UserRole
+from services.auth_service import AuthenticatedPrincipal
+from services.brand_service import require_brand_membership
 from ui.components import page_header
-from ui.styles import inject_styles
+from ui.styles import demo_banner, inject_styles
 from services.document_parser import MAX_BYTES
 from services.guideline_service import get_all_products
 from services.knowledge_onboarding import (
@@ -57,7 +59,11 @@ _CATEGORY_LABELS = {
 
 
 def _product_options() -> tuple[list[str], dict[str, int | None]]:
-    products = get_all_products()
+    principal = st.session_state.get("brl_principal")
+    products = get_all_products(
+        principal=principal,
+        brand_id=st.session_state.get("active_brand_id"),
+    )
     options = ["No specific product"]
     mapping: dict[str, int | None] = {options[0]: None}
     for product in products:
@@ -67,7 +73,7 @@ def _product_options() -> tuple[list[str], dict[str, int | None]]:
     return options, mapping
 
 
-def _render_provenance(entry: dict, role: str) -> None:
+def _render_provenance(entry: dict, role: str, principal: AuthenticatedPrincipal, brand_id: int) -> None:
     if not entry.get("document_id"):
         st.caption("Provenance: manually supplied; not verified against a source document.")
         return
@@ -78,7 +84,10 @@ def _render_provenance(entry: dict, role: str) -> None:
         st.warning("Quotation is recorded but its exact location on this page is not verified.")
         if st.button("Verify quotation location", key=f"verify_quote_{entry['id']}"):
             try:
-                verify_source_quote_location(entry["id"], role, actor_role=role)
+                verify_source_quote_location(
+                    entry["id"], principal.username, actor_role=role,
+                    principal=principal, brand_id=brand_id,
+                )
             except (ValueError, PermissionError) as exc:
                 st.error(str(exc))
             else:
@@ -103,7 +112,10 @@ def _render_provenance(entry: dict, role: str) -> None:
                 st.error("Confirm the statement above before recording source support.")
             else:
                 try:
-                    confirm_source_support(entry["id"], role, note, actor_role=role)
+                    confirm_source_support(
+                        entry["id"], principal.username, note, actor_role=role,
+                        principal=principal, brand_id=brand_id,
+                    )
                 except (ValueError, PermissionError) as exc:
                     st.error(str(exc))
                 else:
@@ -111,40 +123,50 @@ def _render_provenance(entry: dict, role: str) -> None:
                     st.rerun()
 
 
-def _source_preview(document_id: int, filename: str, page_number: int) -> None:
-    preview = get_original_page_preview(document_id, page_number)
+def _source_preview(
+    document_id: int, filename: str, page_number: int,
+    principal: AuthenticatedPrincipal, brand_id: int,
+) -> None:
+    preview = get_original_page_preview(
+        document_id, page_number, principal=principal, brand_id=brand_id
+    )
     if preview:
         st.image(preview, caption=f"Original page {page_number}", width="stretch")
     elif Path(filename).suffix.lower() in {".png", ".jpg", ".jpeg"}:
         from services.knowledge_onboarding import get_source_document
-        document = get_source_document(document_id)
+        from services.knowledge_onboarding import get_source_document
+        document = get_source_document(document_id, principal, brand_id)
         st.image(document["original_bytes"], caption="Preserved original image", width="stretch")
     else:
         st.caption("Original file is preserved. Preview is available for PDF and image files.")
 
 
-def render() -> None:
+def render(principal: AuthenticatedPrincipal) -> None:
     inject_styles()
+    st.session_state["brl_principal"] = principal
     page_header("Workspace", "Brand Knowledge")
+    demo_banner()
     st.write(
         "Bring together your brand rules, writing guidance, product facts, evidence, "
         "restrictions and visual assets. Nothing suggested by AI becomes active without review."
     )
-    role = st.session_state.get("sidebar_role", UserRole.CREATOR.value)
+    brand_id = st.session_state.get("active_brand_id")
+    membership = require_brand_membership(principal, brand_id)
+    role = membership["role"]
     tabs = st.tabs(["Set up your brand", "Upload and recover documents", "Review proposals"])
 
     with tabs[0]:
-        _render_manual_setup()
+        _render_manual_setup(principal, brand_id)
     with tabs[1]:
-        _render_documents(role)
+        _render_documents(role, principal, brand_id)
     with tabs[2]:
-        _render_proposals(role)
+        _render_proposals(role, principal, brand_id)
 
 
-def _render_manual_setup() -> None:
+def _render_manual_setup(principal: AuthenticatedPrincipal, brand_id: int) -> None:
     st.subheader("Create your brand knowledge")
     st.caption("Skip anything that is not relevant. You can return and continue later.")
-    profiles = get_brand_profiles()
+    profiles = get_brand_profiles(principal, brand_id)
     profile_default = profiles[0] if profiles else {}
 
     with st.expander("A. Brand identity and tone", expanded=not profiles):
@@ -179,9 +201,10 @@ def _render_manual_setup() -> None:
                     save_brand_profile(
                         brand, industry, audience, description,
                         "; ".join(dict.fromkeys(descriptions)), visual_identity,
+                        principal=principal, brand_id=brand_id,
                     )
                     st.success("Brand identity saved.")
-                except ValueError as exc:
+                except (ValueError, PermissionError) as exc:
                     st.error(str(exc))
 
     with st.expander("Add a product or service"):
@@ -193,10 +216,11 @@ def _render_manual_setup() -> None:
             if st.form_submit_button("Save product"):
                 try:
                     product_id = create_onboarding_product(
-                        product_name, brand_name, product_description, market
+                        product_name, brand_name, product_description, market,
+                        principal=principal, brand_id=brand_id,
                     )
                     st.success(f"Saved product #{product_id}.")
-                except ValueError as exc:
+                except (ValueError, PermissionError) as exc:
                     st.error(str(exc))
 
     st.markdown("#### Add proposed rules, facts, terminology or restrictions")
@@ -215,7 +239,7 @@ def _render_manual_setup() -> None:
         key="manual_knowledge_content_type",
         placeholder="For example: paid social, product page",
     )
-    documents = get_source_documents()
+    documents = get_source_documents(principal, brand_id)
     document_labels = ["No source document"] + [
         f"{item['filename']} (#{item['id']})" for item in documents
     ]
@@ -249,6 +273,7 @@ def _render_manual_setup() -> None:
                 document_id=selected_id,
                 source_page=selected_page,
                 source_quote=source_quote,
+                principal=principal, brand_id=brand_id,
             )
             st.success(f"Proposal #{entry_id} saved for human review.")
         except (ValueError, KnowledgeOnboardingError) as exc:
@@ -256,7 +281,7 @@ def _render_manual_setup() -> None:
     st.info("Manual entries are proposals too. They do not become active until an authorised demo role approves them.")
 
 
-def _render_documents(role: str) -> None:
+def _render_documents(role: str, principal: AuthenticatedPrincipal, brand_id: int) -> None:
     st.subheader("Upload an existing document")
     st.caption(
         "Supported here: PDF, DOCX, TXT, CSV, XLSX, PNG and JPEG. Legacy XLS workbooks are not supported. "
@@ -292,13 +317,14 @@ def _render_documents(role: str) -> None:
                 document_id = save_source_document(
                     upload.name, upload.getvalue(), document_type, purpose, role,
                     mapping[product_label], market, channel, content_type,
+                    principal=principal, brand_id=brand_id,
                 )
                 st.session_state["onboarding_last_document_id"] = document_id
                 st.success(f"Document saved locally as source #{document_id}. Original file is preserved.")
             except KnowledgeOnboardingError as exc:
                 st.error(str(exc))
 
-    documents = get_source_documents()
+    documents = get_source_documents(principal, brand_id)
     if not documents:
         st.info("No source documents uploaded yet. You can also create proposals manually.")
         return
@@ -335,7 +361,7 @@ def _render_documents(role: str) -> None:
         with st.expander(title, expanded=bool(warnings)):
             original_col, text_col = st.columns(2)
             with original_col:
-                _source_preview(document_id, selected["filename"], page_number)
+                _source_preview(document_id, selected["filename"], page_number, principal, brand_id)
             with text_col:
                 if method in {"ocr", "text+ocr"}:
                     st.caption(
@@ -354,7 +380,10 @@ def _render_documents(role: str) -> None:
                 )
                 if st.button("Save corrected text", key=f"correct_{document_id}_{page_number}"):
                     try:
-                        correct_extracted_page(document_id, page_number, corrected)
+                        correct_extracted_page(
+                            document_id, page_number, corrected,
+                            principal=principal, brand_id=brand_id,
+                        )
                         st.success("Correction saved. The original source remains unchanged.")
                         st.rerun()
                     except ValueError as exc:
@@ -371,7 +400,9 @@ def _render_documents(role: str) -> None:
     )
     if st.button("Extract proposals with AI", disabled=not consent, key=f"extract_{document_id}"):
         try:
-            result = extract_document_proposals(document_id)
+            result = extract_document_proposals(
+                document_id, principal=principal, brand_id=brand_id
+            )
             summary = (
                 f"Processed {result['chunks_processed']} chunk(s); created "
                 f"{result['created']} source-validated pending proposal(s); rejected "
@@ -410,7 +441,7 @@ def _render_documents(role: str) -> None:
             st.error(str(exc))
         finally:
             selected = next(
-                item for item in get_source_documents() if item["id"] == document_id
+                item for item in get_source_documents(principal, brand_id) if item["id"] == document_id
             )
             status_placeholder.caption(
                 f"Type: {selected['document_type']} · Text extraction: {selected['extraction_status']} · "
@@ -421,14 +452,16 @@ def _render_documents(role: str) -> None:
                 extraction_error_placeholder.warning(selected["ai_extraction_error"])
 
 
-def _render_proposals(role: str) -> None:
+def _render_proposals(role: str, principal: AuthenticatedPrincipal, brand_id: int) -> None:
     st.subheader("Human review queue")
     st.caption(
-        "The sidebar role is simulated for this demo. Brand rules need Reviewer; product facts, "
-        "evidence and assets need Fact Owner. There is no sign-in or real role-based access control."
+        "Brand rules require the Reviewer role; product facts, evidence and assets "
+        "require the Fact Owner role."
     )
 
-    conflicts = get_knowledge_conflicts(unresolved_only=True)
+    conflicts = get_knowledge_conflicts(
+        unresolved_only=True, principal=principal, brand_id=brand_id
+    )
     if conflicts:
         st.markdown("#### Potential duplicates and conflicts")
         st.warning("These are not resolved automatically. Compare both entries and source documents.")
@@ -446,7 +479,7 @@ def _render_proposals(role: str) -> None:
                     st.caption(f"Source: {conflict['second_source'] or 'Manual'}")
                     if conflict["second_quote"]:
                         st.caption(f"Quote: “{conflict['second_quote']}”")
-                if role in {UserRole.REVIEWER.value, UserRole.FACT_OWNER.value}:
+                if role in {BrandRole.OWNER.value, UserRole.REVIEWER.value, UserRole.FACT_OWNER.value}:
                     resolution = st.selectbox(
                         "Human decision",
                         ["FIRST", "SECOND", "KEEP_BOTH", "DISMISSED"],
@@ -462,14 +495,15 @@ def _render_proposals(role: str) -> None:
                     if st.button("Save conflict decision", key=f"resolve_{conflict['id']}"):
                         try:
                             resolve_knowledge_conflict(
-                                conflict["id"], resolution, role, note, actor_role=role
+                                conflict["id"], resolution, role, note, actor_role=role,
+                                principal=principal, brand_id=brand_id,
                             )
                             st.success("Resolution recorded. Proposals still require individual approval.")
                             st.rerun()
                         except (ValueError, PermissionError) as exc:
                             st.error(str(exc))
 
-    entries = get_knowledge_entries()
+    entries = get_knowledge_entries(principal=principal, brand_id=brand_id)
     pending = [item for item in entries if item["status"] in {
         "PENDING_APPROVAL", "NEEDS_CLARIFICATION", "UNRESOLVED"
     }]
@@ -485,25 +519,28 @@ def _render_proposals(role: str) -> None:
             )
             if entry["source_quote"]:
                 st.info(f"Exact source quotation: “{entry['source_quote']}”")
-            _render_provenance(entry, role)
+            _render_provenance(entry, role, principal, brand_id)
             for warning in entry["warnings"]:
                 st.warning(warning)
             if entry["confidence"] is not None:
                 st.caption(f"AI extraction confidence estimate: {entry['confidence']:.0%}; not a truth or approval score.")
             if entry["document_id"]:
                 source = next(
-                    (item for item in get_source_documents() if item["id"] == entry["document_id"]),
+                    (item for item in get_source_documents(principal, brand_id) if item["id"] == entry["document_id"]),
                     None,
                 )
                 if source and entry["source_page"]:
-                    _source_preview(entry["document_id"], source["filename"], int(entry["source_page"]))
+                    _source_preview(
+                        entry["document_id"], source["filename"],
+                        int(entry["source_page"]), principal, brand_id,
+                    )
 
             options, mapping = _product_options()
             selected_product = next(
                 (label for label, product_id in mapping.items() if product_id == entry["product_id"]),
                 options[0],
             )
-            documents = get_source_documents()
+            documents = get_source_documents(principal, brand_id)
             source_options = ["Manual entry (no document)"] + [
                 f"{item['filename']} (#{item['id']})" for item in documents
             ]
@@ -569,6 +606,7 @@ def _render_proposals(role: str) -> None:
                             source_quote=source_quote,
                             detach_source=(entry.get("document_id") is not None and source_document_id is None),
                             actor_role=role,
+                            principal=principal, brand_id=brand_id,
                         )
                         st.success("Proposal edits saved and versioned; review it again before approval.")
                         st.rerun()
@@ -589,14 +627,16 @@ def _render_proposals(role: str) -> None:
                     "this general proposal button cannot activate them."
                 )
             st.caption(f"Approval responsibility: {required_role}.")
+            can_decide = role in {BrandRole.OWNER.value, required_role}
             approve_col, reject_col, clarify_col, unresolved_col = st.columns(4)
             if approve_col.button(
                 "Approve", key=f"approve_entry_{entry['id']}",
-                disabled=role != required_role or rule_proposal,
+                disabled=not can_decide or rule_proposal,
             ):
                 try:
                     result = decide_knowledge_entry(
-                        entry["id"], "APPROVE", role, actor_role=role
+                        entry["id"], "APPROVE", role, actor_role=role,
+                        principal=principal, brand_id=brand_id,
                     )
                     linked = result["linked_record"]
                     if linked:
@@ -608,7 +648,10 @@ def _render_proposals(role: str) -> None:
                     st.error(str(exc))
             if reject_col.button("Reject", key=f"reject_entry_{entry['id']}"):
                 try:
-                    decide_knowledge_entry(entry["id"], "REJECT", role, actor_role=role)
+                    decide_knowledge_entry(
+                        entry["id"], "REJECT", role, actor_role=role,
+                        principal=principal, brand_id=brand_id,
+                    )
                 except (ValueError, PermissionError) as exc:
                     st.error(str(exc))
                 else:
@@ -618,6 +661,7 @@ def _render_proposals(role: str) -> None:
                     decide_knowledge_entry(
                         entry["id"], "CLARIFY", role, "More information is needed.",
                         actor_role=role,
+                        principal=principal, brand_id=brand_id,
                     )
                 except (ValueError, PermissionError) as exc:
                     st.error(str(exc))
@@ -626,7 +670,8 @@ def _render_proposals(role: str) -> None:
             if unresolved_col.button("Mark unresolved", key=f"unresolved_entry_{entry['id']}"):
                 try:
                     decide_knowledge_entry(
-                        entry["id"], "UNRESOLVED", role, actor_role=role
+                        entry["id"], "UNRESOLVED", role, actor_role=role,
+                        principal=principal, brand_id=brand_id,
                     )
                 except (ValueError, PermissionError) as exc:
                     st.error(str(exc))
@@ -640,14 +685,18 @@ def _render_proposals(role: str) -> None:
                 history = conn.execute(
                     """
                     SELECT v.entry_id, v.version_number, v.actor, v.created_at, v.content
-                    FROM knowledge_entry_versions v ORDER BY v.entry_id, v.version_number
-                    """
+                    FROM knowledge_entry_versions v
+                    JOIN knowledge_entries e ON e.id = v.entry_id
+                    WHERE e.brand_id = ? ORDER BY v.entry_id, v.version_number
+                    """, (brand_id,),
                 ).fetchall()
                 decisions = conn.execute(
                     """
-                    SELECT entry_id, decision, actor, note, created_at
-                    FROM knowledge_decisions ORDER BY id DESC LIMIT 100
-                    """
+                    SELECT d.entry_id, d.decision, d.actor, d.note, d.created_at
+                    FROM knowledge_decisions d
+                    JOIN knowledge_entries e ON e.id = d.entry_id
+                    WHERE e.brand_id = ? ORDER BY d.id DESC LIMIT 100
+                    """, (brand_id,),
                 ).fetchall()
             st.markdown("**Versions**")
             for row in history:

@@ -4,7 +4,9 @@ from __future__ import annotations
 
 import streamlit as st
 
-from models.enums import UserRole
+from services.auth_service import AuthenticatedPrincipal
+from models.enums import BrandRole
+from services.brand_service import require_brand_membership
 from services.fact_service import (
     approve_fact_version,
     get_pending_fact_versions,
@@ -14,20 +16,25 @@ from ui.styles import demo_banner, inject_styles
 from ui.components import page_header
 
 
-def render(role: UserRole | None = None) -> None:
+def render(principal: AuthenticatedPrincipal | None = None) -> None:
     inject_styles()
     page_header("Governance", "Fact Approvals")
     demo_banner()
 
-    if role != UserRole.FACT_OWNER:
-        st.info("Pending fact decisions are available in the simulated Fact Owner role.")
+    brand_id = st.session_state.get("active_brand_id")
+    try:
+        require_brand_membership(
+            principal, brand_id, (BrandRole.OWNER, BrandRole.FACT_OWNER)
+        )
+    except PermissionError:
+        st.info("Pending fact decisions are available only to authenticated Fact Owners.")
         return
 
     st.caption(
         "Verify each evidence source before approving. Approved versions become available to reviews; "
         "rejected versions remain in the audit history."
     )
-    pending = get_pending_fact_versions()
+    pending = get_pending_fact_versions(principal=principal, brand_id=brand_id)
     if not pending:
         st.info("No fact versions are waiting for approval.")
         return
@@ -54,7 +61,9 @@ def render(role: UserRole | None = None) -> None:
                 key=f"approve_pending_fact_{fact_version['id']}",
                 type="primary",
             ):
-                affected = approve_fact_version(fact_version["id"], actor_role=role)
+                affected = approve_fact_version(
+                    fact_version["id"], principal=principal, brand_id=brand_id
+                )
                 if affected:
                     st.success(
                         f"Approved. {affected} claim(s) linked to earlier evidence now need re-verification."
@@ -67,7 +76,9 @@ def render(role: UserRole | None = None) -> None:
                 "Reject proposal",
                 key=f"reject_pending_fact_{fact_version['id']}",
             ):
-                if reject_fact_version(fact_version["id"], actor_role=role):
+                if reject_fact_version(
+                    fact_version["id"], principal=principal, brand_id=brand_id
+                ):
                     st.success("Fact version rejected and retained in the audit history.")
                 else:
                     st.warning("This fact version is no longer waiting for approval.")
