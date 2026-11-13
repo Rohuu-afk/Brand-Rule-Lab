@@ -488,6 +488,12 @@ To deploy Brand Rule Lab on Render as a Web Service:
 4. **SQLite and uploads persistence**: Render's container filesystem is ephemeral unless a persistent disk is attached. Without a disk, both the database and uploaded files may be lost on redeploy or restart. For a persistent single-instance demonstration, attach a disk mounted at `/app/data` and keep both paths under that mount. This SQLite MVP is not configured for multi-instance/horizontal scaling.
 5. **Safe startup**: The container runs the idempotent `seed(force=False)` path before Streamlit starts. It creates demo data only when the configured database is empty and never scans or seeds sibling database files. Database files and SQLite WAL sidecars are excluded from the Docker build context.
 
+
+
+# Email for invitation testing 
+onboarding@resend.dev 
+(we dont have .com domain yet to verify on resend.)
+
 Authentication uses provisioned local accounts with server-side session and
 role validation. Brand membership migration 12 is additive and leaves
 historical records available; legacy records without a brand association are
