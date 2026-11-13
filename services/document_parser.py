@@ -33,6 +33,7 @@ import csv
 import shutil
 import subprocess
 import tempfile
+from functools import lru_cache
 from pathlib import Path
 
 MAX_BYTES = int(os.getenv("MAX_UPLOAD_MB", "10")) * 1024 * 1024
@@ -217,50 +218,121 @@ def _resolve_tesseract_command() -> str:
         str(default_command) if default_command.is_file() else shutil.which("tesseract")
     )
     if not command or not Path(command).expanduser().is_file():
-        target = configured_command or "the default Windows installation"
+        target = configured_command or "'tesseract' on PATH"
         raise ParseError(
             f"Tesseract executable was not found at {target}. Set TESSERACT_CMD "
-            "to the installed tesseract.exe path."
+            "to the installed Tesseract executable."
         )
     return str(Path(command).expanduser().resolve())
 
 
-def _configure_tesseract(pytesseract, command: str | None = None) -> str:
-    command = command or _resolve_tesseract_command()
-    tessdata_setting = os.getenv("TESSDATA_PREFIX", "").strip()
-    if tessdata_setting:
-        tessdata_candidates = [Path(tessdata_setting).expanduser()]
+def _system_tessdata_directories(platform_name: str) -> list[Path]:
+    if platform_name != "posix":
+        return []
+    return [
+        Path("/usr/share/tessdata"),
+        Path("/usr/local/share/tessdata"),
+        *Path("/usr/share/tesseract-ocr").glob("*/tessdata"),
+        *Path("/usr/local/share/tesseract-ocr").glob("*/tessdata"),
+    ]
+
+
+def _tessdata_search_directories(
+    command: str, configured_prefix: str, platform_name: str
+) -> list[Path]:
+    candidates: list[Path] = []
+
+    def add(candidate: Path) -> None:
+        candidate = candidate.expanduser()
+        if candidate not in candidates:
+            candidates.append(candidate)
+
+    if configured_prefix:
+        configured = Path(configured_prefix).expanduser()
+        if configured.name.casefold() == "tessdata":
+            add(configured)
+            add(configured / "tessdata")
+        else:
+            add(configured / "tessdata")
+            add(configured)
+
+    if platform_name == "posix":
+        for candidate in _system_tessdata_directories(platform_name):
+            add(candidate)
+        add(Path(command).parent / "tessdata")
     else:
-        tessdata_candidates = [Path(command).parent / "tessdata"]
-        if os.name == "posix":
-            tessdata_candidates.extend(
-                [
-                    Path("/usr/share/tessdata"),
-                    Path("/usr/local/share/tessdata"),
-                    *Path("/usr/share/tesseract-ocr").glob("*/tessdata"),
-                ]
-            )
+        add(Path(command).parent / "tessdata")
+    return candidates
 
-    tessdata = None
-    for candidate in tessdata_candidates:
-        if (candidate / "eng.traineddata").is_file():
-            tessdata = candidate
-            break
-        nested_candidate = candidate / "tessdata"
-        if (nested_candidate / "eng.traineddata").is_file():
-            tessdata = nested_candidate
-            break
 
-    if tessdata is None:
-        searched = ", ".join(str(candidate) for candidate in tessdata_candidates)
+def _tessdata_prefix_options(tessdata: Path, platform_name: str) -> list[Path]:
+    if platform_name == "nt":
+        return [tessdata, tessdata.parent]
+    return [tessdata.parent, tessdata]
+
+
+@lru_cache(maxsize=32)
+def _tesseract_reports_english(command: str, prefix: str) -> bool:
+    environment = os.environ.copy()
+    environment["TESSDATA_PREFIX"] = prefix
+    try:
+        result = subprocess.run(
+            [command, "--list-langs"],
+            capture_output=True,
+            check=False,
+            env=environment,
+            text=True,
+            timeout=10,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return False
+    return result.returncode == 0 and any(
+        line.strip() == "eng" for line in result.stdout.splitlines()
+    )
+
+
+def _configure_tesseract(
+    pytesseract, command: str | None = None, *, platform_name: str | None = None
+) -> str:
+    command = command or _resolve_tesseract_command()
+    command = str(Path(command).expanduser().resolve())
+    platform_name = platform_name or os.name
+    candidates = _tessdata_search_directories(
+        command, os.getenv("TESSDATA_PREFIX", "").strip(), platform_name
+    )
+    data_dirs = [
+        candidate for candidate in candidates
+        if (candidate / "eng.traineddata").is_file()
+    ]
+    if not data_dirs:
+        searched = (
+            ", ".join(str(candidate) for candidate in candidates)
+            or "no known locations"
+        )
         raise ParseError(
-            f"English Tesseract language data (eng.traineddata) was not found in "
-            f"{searched}. Set TESSDATA_PREFIX to the directory containing it."
+            "English Tesseract language data (eng.traineddata) was not found. "
+            f"Checked: {searched}. Install the English language package "
+            "(for Debian/Ubuntu, tesseract-ocr-eng) or correct TESSDATA_PREFIX."
         )
 
-    pytesseract.pytesseract.tesseract_cmd = command
-    os.environ["TESSDATA_PREFIX"] = str(tessdata.resolve())
-    return ""
+    prefixes = [
+        prefix
+        for tessdata in data_dirs
+        for prefix in _tessdata_prefix_options(tessdata, platform_name)
+    ]
+    for prefix in prefixes:
+        resolved_prefix = str(prefix.resolve())
+        if _tesseract_reports_english(command, resolved_prefix):
+            pytesseract.pytesseract.tesseract_cmd = command
+            os.environ["TESSDATA_PREFIX"] = resolved_prefix
+            return ""
+
+    locations = ", ".join(str(path) for path in data_dirs)
+    raise ParseError(
+        "eng.traineddata exists, but Tesseract does not report English ('eng') "
+        f"as available from {locations}. Check TESSDATA_PREFIX and the Tesseract "
+        "installation."
+    )
 
 
 def ocr_pil_image(
@@ -276,11 +348,8 @@ def ocr_pil_image(
 
     config = tesseract_config
     if config is None:
-        try:
-            command = _resolve_tesseract_command()
-            config = _configure_tesseract(pytesseract, command)
-        except Exception:
-            config = ""
+        command = _resolve_tesseract_command()
+        config = _configure_tesseract(pytesseract, command)
 
     image_width, image_height = image.size
     data_result = pytesseract.image_to_data(
@@ -943,40 +1012,6 @@ def _ocr_completeness_warnings(text: str, confidence: float) -> list[str]:
             "OCR recovered very little text; the page may be incomplete. Verify it against the original."
         ]
     return []
-
-
-def _configure_tesseract(pytesseract) -> str:
-    configured_command = os.getenv("TESSERACT_CMD", "").strip()
-    default_command = Path(r"C:\Program Files\Tesseract-OCR\tesseract.exe")
-    command = configured_command or (
-        str(default_command) if default_command.is_file() else shutil.which("tesseract")
-    )
-    if not command or not Path(command).expanduser().is_file():
-        target = configured_command or "the default Windows installation"
-        raise ParseError(
-            f"Tesseract executable was not found at {target}. Set TESSERACT_CMD "
-            "to the installed tesseract.exe path."
-        )
-
-    tessdata_setting = os.getenv("TESSDATA_PREFIX", "").strip()
-    tessdata = (
-        Path(tessdata_setting).expanduser()
-        if tessdata_setting else Path(command).parent / "tessdata"
-    )
-    if (
-        not (tessdata / "eng.traineddata").is_file()
-        and (tessdata / "tessdata" / "eng.traineddata").is_file()
-    ):
-        tessdata /= "tessdata"
-    if not (tessdata / "eng.traineddata").is_file():
-        raise ParseError(
-            f"English Tesseract language data (eng.traineddata) was not found in "
-            f"{tessdata}. Set TESSDATA_PREFIX to the directory containing it."
-        )
-
-    pytesseract.pytesseract.tesseract_cmd = str(Path(command).expanduser().resolve())
-    os.environ["TESSDATA_PREFIX"] = str(tessdata.resolve())
-    return ""
 
 
 def _is_tesseract_unavailable(error: Exception) -> bool:

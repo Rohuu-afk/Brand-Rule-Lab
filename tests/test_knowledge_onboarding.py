@@ -714,6 +714,27 @@ def test_scanned_pdf_without_tesseract_is_saved_as_needing_attention(monkeypatch
     assert parsed["page_records"][0]["warnings"]
 
 
+def test_scanned_pdf_reports_how_to_install_missing_english_language_data(
+    tmp_path, monkeypatch
+):
+    executable = tmp_path / "tesseract.exe"
+    executable.write_bytes(b"synthetic executable path for configuration test")
+    monkeypatch.setenv("TESSERACT_CMD", str(executable))
+    monkeypatch.setenv("TESSDATA_PREFIX", str(tmp_path / "missing-tessdata"))
+
+    pdf = fitz.open()
+    pdf.new_page()
+    source = pdf.tobytes()
+    pdf.close()
+
+    parsed = parse_for_onboarding("scan.pdf", source)
+
+    warnings = parsed["page_records"][0]["warnings"]
+    assert parsed["extraction_status"] == "NEEDS_ATTENTION"
+    assert any("eng.traineddata" in warning for warning in warnings)
+    assert any("tesseract-ocr-eng" in warning for warning in warnings)
+
+
 def test_missing_tesseract_executable_does_not_report_rotation_as_a_separate_failure(monkeypatch):
     pdf = fitz.open()
     pdf.new_page()
@@ -741,14 +762,75 @@ def test_tesseract_configuration_validates_executable_and_english_data(tmp_path,
     )
     monkeypatch.setenv("TESSERACT_CMD", str(executable))
     monkeypatch.setenv("TESSDATA_PREFIX", str(tessdata))
+    monkeypatch.setattr(
+        "services.document_parser._tesseract_reports_english",
+        lambda command, prefix: prefix == str(tessdata.resolve()),
+    )
 
     assert _configure_tesseract(fake_pytesseract) == ""
     assert fake_pytesseract.pytesseract.tesseract_cmd == str(executable.resolve())
     assert __import__("os").environ["TESSDATA_PREFIX"] == str(tessdata.resolve())
 
     monkeypatch.setenv("TESSDATA_PREFIX", str(tmp_path / "missing-tessdata"))
-    with pytest.raises(ParseError, match="eng.traineddata"):
+    assert _configure_tesseract(fake_pytesseract) == ""
+    assert __import__("os").environ["TESSDATA_PREFIX"] == str(tessdata.resolve())
+
+
+def test_tesseract_configuration_warns_when_english_data_is_missing(tmp_path, monkeypatch):
+    from services.document_parser import ParseError, _configure_tesseract
+
+    executable = tmp_path / "tesseract"
+    executable.write_bytes(b"synthetic executable path for configuration test")
+    monkeypatch.setenv("TESSERACT_CMD", str(executable))
+    monkeypatch.setenv("TESSDATA_PREFIX", str(tmp_path / "incorrect-prefix"))
+    fake_pytesseract = SimpleNamespace(
+        pytesseract=SimpleNamespace(tesseract_cmd=""),
+    )
+
+    with pytest.raises(ParseError, match="tesseract-ocr-eng"):
         _configure_tesseract(fake_pytesseract)
+
+
+def test_tesseract_linux_search_finds_versioned_package_data(tmp_path, monkeypatch):
+    from services import document_parser
+
+    executable = tmp_path / "usr" / "bin" / "tesseract"
+    executable.parent.mkdir(parents=True)
+    executable.write_bytes(b"synthetic executable path for configuration test")
+    tessdata = (
+        tmp_path / "usr" / "share" / "tesseract-ocr" / "5" / "tessdata"
+    )
+    tessdata.mkdir(parents=True)
+    (tessdata / "eng.traineddata").write_bytes(b"synthetic language-data marker")
+    monkeypatch.setenv("TESSERACT_CMD", str(executable))
+    monkeypatch.delenv("TESSDATA_PREFIX", raising=False)
+    monkeypatch.setattr(
+        document_parser,
+        "_system_tessdata_directories",
+        lambda platform_name: [tessdata] if platform_name == "posix" else [],
+    )
+    monkeypatch.setattr(
+        document_parser,
+        "_tesseract_reports_english",
+        lambda command, prefix: prefix == str(tessdata.parent.resolve()),
+    )
+    fake_pytesseract = SimpleNamespace(
+        pytesseract=SimpleNamespace(tesseract_cmd=""),
+    )
+
+    assert document_parser._configure_tesseract(
+        fake_pytesseract, platform_name="posix"
+    ) == ""
+    assert fake_pytesseract.pytesseract.tesseract_cmd == str(executable.resolve())
+    assert __import__("os").environ["TESSDATA_PREFIX"] == str(tessdata.parent.resolve())
+
+
+def test_tesseract_prefix_semantics_are_platform_aware(tmp_path):
+    from services.document_parser import _tessdata_prefix_options
+
+    tessdata = tmp_path / "tessdata"
+    assert _tessdata_prefix_options(tessdata, "nt") == [tessdata, tmp_path]
+    assert _tessdata_prefix_options(tessdata, "posix") == [tmp_path, tessdata]
 
 
 def test_tesseract_configuration_uses_verified_windows_defaults(monkeypatch):

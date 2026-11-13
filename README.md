@@ -279,6 +279,16 @@ the flag.
   ```
 
   Open a new PowerShell window and verify `where.exe tesseract`, `tesseract --version`, `tesseract --list-langs` (including `eng`), and the presence of `eng.traineddata`. Missing executable or English data produces a per-page attention warning; a Python wrapper alone does not enable OCR. Unreadable and low-confidence pages are flagged for inspection/correction. Visual-asset uploads are preserved without text OCR. OCR tests are local fixture checks, not a general OCR accuracy guarantee.
+
+  On Debian-based Streamlit deployments, `packages.txt` installs both
+  `tesseract-ocr` and `tesseract-ocr-eng`. Debian places the executable at
+  `/usr/bin/tesseract` and versioned language data under
+  `/usr/share/tesseract-ocr/<version>/tessdata`. The parser searches these
+  package locations, checks that `eng.traineddata` exists, and confirms that
+  `tesseract --list-langs` reports `eng`. Do not set `TESSDATA_PREFIX` to
+  `/usr/bin/tessdata`; if overriding it on Linux, point it to the directory
+  containing `tessdata`. On Windows, the installed Tesseract build may require
+  the `tessdata` directory itself; the parser tests both supported forms.
 * **Knowledge Onboarding Scope**: AI entries remain proposals until individually approved. Fact proposals create approved versions only after Fact Owner approval; generic evidence proposals remain traceable but do not independently substantiate claims. Rule proposals require source-backed Rule Readiness review: CODE_CHECKABLE proposals are validated against a narrow predicate whitelist and tested before activation; AI_ASSISTED guidance is context for advisory assessment; HUMAN_JUDGEMENT and UNCLEAR items are not automatically enforced. Unclear items need a recorded human clarification. Conflicts are conservative heuristics for human review, not a complete contradiction detector. Workspaces have brand-scoped memberships and queries. Legacy role-string authorization is gated to explicitly opted-in pytest runs; optional-principal service APIs still need a complete audit before enterprise deployment.
 * **AI review bounds**: Claim extraction is not sent to an AI provider for drafts over 30,000 characters; deterministic checks still inspect the full draft. Tone analysis is capped at the first 8,000 characters and marked `PARTIAL` with a visible warning. Fact-ranking context is bounded to 4,000 characters. These limits are not a claim that AI reviewed omitted text.
 * **Visual Checks**: SHA-256 detects exact image file identity; pHash compares image similarity using a Hamming-distance threshold. Approved packaging references can also be selected for OCR token comparison against uploaded package artwork. OCR differences are reviewer prompts and can be affected by image quality. The checks do not locate a logo inside a full ad or verify geometry, safe zones, layout, colors, or the entire visual design.
