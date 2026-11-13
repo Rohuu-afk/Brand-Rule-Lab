@@ -442,6 +442,8 @@ def render() -> None:
     oidc_error = st.session_state.pop("brl_oidc_error", None)
     if oidc_error:
         st.error(oidc_error)
+        if _oidc_identity_data():
+            return
     verify_token = st.query_params.get("verify")
     if verify_token:
         verified = verify_email(verify_token)
@@ -452,9 +454,17 @@ def render() -> None:
             st.error("This verification link is invalid, expired, or has already been used.")
     if _render_password_reset():
         return
+    invite_token = st.query_params.get("invite")
+    if not invite_token and _oidc_identity_data():
+        st.subheader("Finish setting up your brand workspace")
+        st.write(
+            "You’re signed in with Google. Choose a username and brand name "
+            "to create your workspace."
+        )
+        _render_oidc_account_setup()
+        return
     show_login = bool(st.session_state.get("brl_show_login"))
     show_demo = bool(st.session_state.get("brl_show_demo"))
-    invite_token = st.query_params.get("invite")
     brand, nav, entry = st.columns([2.2, 3.5, 2.7], vertical_alignment="center")
     with brand:
         logo, wordmark = st.columns([1, 5], vertical_alignment="center")

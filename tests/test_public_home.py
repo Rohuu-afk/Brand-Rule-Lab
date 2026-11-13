@@ -198,6 +198,13 @@ def test_new_google_user_can_create_own_brand_when_demo_database_exists(
     app = AppTest.from_file(Path(__file__).parents[1] / "app.py").run()
 
     assert not app.exception
+    assert "Every claim checked. Every brand protected." not in [
+        title.value for title in app.title
+    ]
+    assert "Open demo" not in [button.label for button in app.button]
+    assert "Finish setting up your brand workspace" in [
+        item.value for item in app.subheader
+    ]
     assert "Start your brand workspace with Google" in [
         item.value for item in app.subheader
     ]
