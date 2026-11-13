@@ -29,6 +29,7 @@ from services.brand_service import (
     list_members,
     remove_member,
     register_initial_owner,
+    register_oidc_brand_owner,
     register_invited_user_with_oidc,
     transfer_brand_ownership,
 )
@@ -98,6 +99,49 @@ def test_first_owner_can_register_with_a_verified_oidc_identity():
     brand = list_brands(principal)[0]
     assert brand["role"] == BrandRole.OWNER.value
     assert verify_audit_export(export_audit_json(principal, brand["id"]))["valid"]
+
+
+def test_new_verified_google_user_can_create_a_brand_after_demo_is_seeded():
+    existing_owner = _principal(
+        "demo-owner", "demo-password", UserRole.CREATOR, "demo-owner@example.com"
+    )
+    create_brand(existing_owner, "Existing Demo Brand")
+
+    account = register_oidc_brand_owner(
+        "new-google-owner",
+        "new-google-owner@example.com",
+        "My Brand",
+        oidc_subject="new-google-subject",
+        oidc_email_verified=True,
+    )
+    principal = resolve_session(
+        login_oidc_identity(
+            "new-google-subject", "new-google-owner@example.com", True
+        )
+    )
+
+    assert account["token"] is None
+    assert [(brand["name"], brand["role"]) for brand in list_brands(principal)] == [
+        ("My Brand", BrandRole.OWNER.value)
+    ]
+    assert verify_audit_export(
+        export_audit_json(principal, account["brand_id"])
+    )["valid"]
+
+
+def test_new_google_brand_registration_requires_verified_identity():
+    with pytest.raises(ValueError, match="verified OIDC identity"):
+        register_oidc_brand_owner(
+            "unverified-owner",
+            "unverified@example.com",
+            "Unverified Brand",
+            oidc_subject="unverified-subject",
+            oidc_email_verified=False,
+        )
+    with get_connection() as conn:
+        assert conn.execute(
+            "SELECT COUNT(*) FROM users WHERE username = 'unverified-owner'"
+        ).fetchone()[0] == 0
 
 
 def test_sso_required_blocks_password_owner_registration(monkeypatch):

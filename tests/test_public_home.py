@@ -171,5 +171,52 @@ def test_new_invitee_can_choose_configured_sso_or_password_registration(
 
     assert not app.exception
     assert "Join your invited workspace" in [item.value for item in app.subheader]
-    assert "Continue with SSO" in [button.label for button in app.button]
+    assert "Continue with Google" in [button.label for button in app.button]
     assert "Create account and join" in [button.label for button in app.button]
+
+
+def test_new_google_user_can_create_own_brand_when_demo_database_exists(
+    monkeypatch, tmp_path
+):
+    monkeypatch.setenv("DATABASE_PATH", str(tmp_path / "google-brand-owner.sqlite"))
+    apply_schema()
+    create_user("existing-demo-owner", "owner-password-123", UserRole.REVIEWER)
+    existing_owner = resolve_session(
+        login("existing-demo-owner", "owner-password-123")
+    )
+    create_brand(existing_owner, "Existing Demo Brand")
+    monkeypatch.setattr("ui.public_home._oidc_configured", lambda: True)
+    monkeypatch.setattr(
+        "ui.public_home._oidc_identity_data",
+        lambda: {
+            "sub": "new-google-owner-subject",
+            "email": "new-google-owner@example.com",
+            "email_verified": True,
+        },
+    )
+
+    app = AppTest.from_file(Path(__file__).parents[1] / "app.py").run()
+
+    assert not app.exception
+    assert "Start your brand workspace with Google" in [
+        item.value for item in app.subheader
+    ]
+    next(item for item in app.text_input if item.label == "Choose a username").set_value(
+        "new-google-owner"
+    )
+    next(item for item in app.text_input if item.label == "Brand workspace name").set_value(
+        "My Google Brand"
+    )
+    next(
+        item for item in app.button if item.label == "Create my brand workspace"
+    ).click().run()
+
+    assert not app.exception
+    with get_connection() as conn:
+        membership = conn.execute(
+            "SELECT bm.role FROM brand_memberships bm "
+            "JOIN brands b ON b.id = bm.brand_id "
+            "JOIN users u ON u.id = bm.user_id "
+            "WHERE b.name = 'My Google Brand' AND u.username = 'new-google-owner'"
+        ).fetchone()
+    assert membership["role"] == BrandRole.OWNER.value

@@ -21,6 +21,10 @@ class AuthenticationError(ValueError):
     """Raised when credentials cannot authenticate an active account."""
 
 
+class UnlinkedOIDCIdentityError(AuthenticationError):
+    """Raised when a verified identity has no matching account yet."""
+
+
 class SessionError(AuthenticationError):
     """Raised when a session token cannot resolve to an active account."""
 
@@ -270,8 +274,12 @@ def login_oidc_identity(subject: str, email: str, email_verified: bool) -> str:
             "FROM users WHERE oidc_subject = ? OR email = ? COLLATE NOCASE",
             (subject, normalised_email),
         ).fetchall()
+        if not row:
+            raise UnlinkedOIDCIdentityError(
+                "This verified OIDC account is not linked to a workspace account."
+            )
         if len(row) != 1:
-            raise AuthenticationError("This verified OIDC account is not linked to a workspace account.")
+            raise AuthenticationError("This OIDC account cannot access the linked workspace account.")
         user = row[0]
         if (
             not user["is_active"] or not user["email_verified_at"]

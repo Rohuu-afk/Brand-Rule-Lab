@@ -150,11 +150,12 @@ project's ignored `.streamlit/secrets.toml`. Do not commit that file. Without
 Resend, no token is shown to visitors; an administrator can enable
 `ALLOW_DEV_AUTH_LINKS=1` for local setup or securely share an invitation token.
 
-OIDC sign-in uses Streamlit's `[auth]` secrets block and configured
-`server_metadata_url`. A verified identity can create the first owner account
-or register against a matching active invitation; otherwise it must link to an
-existing verified account. An identity cannot gain a role without a brand
-membership. Enable `BRL_REQUIRE_SSO=1` to disable password sign-in, password
+Google sign-in uses Streamlit's `[auth]` secrets block and configured
+`server_metadata_url`. A new verified Google identity can create its own brand
+workspace and become its Brand Owner, even after other accounts and demo
+workspaces exist. It can also register against a matching active invitation.
+Password-based team signup remains invitation-only. An identity cannot gain a
+role without a brand membership. Enable `BRL_REQUIRE_SSO=1` to disable password sign-in, password
 recovery, and password-based invitations; the default `0` keeps those paths
 available for local/demo setups. Configure and verify the identity provider
 before enabling SSO-only mode. Enabling it also invalidates existing

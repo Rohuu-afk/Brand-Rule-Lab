@@ -8,6 +8,7 @@ from services.auth_service import (
     AuthenticatedPrincipal,
     AuthenticationError,
     SessionError,
+    UnlinkedOIDCIdentityError,
     authenticate_user,
     create_user,
     create_email_verification_token,
@@ -178,6 +179,13 @@ def test_oidc_identity_links_only_to_a_verified_matching_email():
         login_oidc_identity("google-subject-2", "google@example.com", False)
     with pytest.raises(AuthenticationError, match="cannot access"):
         login_oidc_identity("google-subject-2", "google@example.com", True)
+
+
+def test_unlinked_verified_oidc_identity_is_available_for_signup():
+    with pytest.raises(UnlinkedOIDCIdentityError):
+        login_oidc_identity(
+            "new-google-subject", "new-google@example.com", True
+        )
 
 
 def test_sso_required_disables_password_sessions_and_recovery(monkeypatch):

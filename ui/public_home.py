@@ -36,6 +36,7 @@ from services.brand_service import (
     get_pending_invitations_for_email,
     list_brands,
     register_initial_owner,
+    register_oidc_brand_owner,
     register_invited_user_with_oidc,
 )
 from services.email_service import application_url, send_email
@@ -146,13 +147,17 @@ def _demo_account_is_scoped(username: str) -> bool:
 def _show_sign_in() -> None:
     st.subheader("Sign in")
     st.caption("Use your work email or username to open your brand workspace.")
-    st.info(
-        "New here? Ask your Brand Owner to invite your work email. Open the "
-        "invitation link to create an account or join an existing account. "
-        "Google sign-in is available when enabled for this app."
-    )
     if _oidc_configured():
-        st.button("Continue with SSO", on_click=st.login, type="secondary")
+        st.info(
+            "New to Brand Rule Lab? Continue with Google to create your own "
+            "brand workspace, or ask a Brand Owner to invite you to an existing one."
+        )
+        st.button("Continue with Google", on_click=st.login, type="secondary")
+    else:
+        st.info(
+            "New here? Ask your Brand Owner to invite your work email. Open the "
+            "invitation link to create an account or join an existing account."
+        )
     if sso_required():
         if not _oidc_configured():
             st.error("SSO is required, but the identity provider is not configured.")
@@ -199,13 +204,13 @@ def _render_invitation(token: str) -> None:
     st.caption(f"Invitation for {invitation['email']}")
     if sso_required():
         if _oidc_configured():
-            st.button("Continue with SSO", on_click=st.login, type="primary")
+            st.button("Continue with Google", on_click=st.login, type="primary")
         else:
             st.error("SSO is required, but the identity provider is not configured.")
         return
     if _oidc_configured():
         st.button(
-            "Continue with SSO",
+            "Continue with Google",
             on_click=st.login,
             type="secondary",
             key="invitation_sso_sign_in",
@@ -235,7 +240,10 @@ def _render_initial_owner_registration() -> None:
     if sso_required() or not can_register_initial_owner():
         return
     with st.expander("Create the first Brand Owner account"):
-        st.caption("Public registration closes as soon as the first account or workspace exists.")
+        st.caption(
+            "Password-based registration closes after the first account or workspace. "
+            "Verified Google users can still create a brand after signing in."
+        )
         with st.form("initial_owner_registration_form"):
             username = st.text_input("Username", key="first_owner_username")
             email = st.text_input("Work email", key="first_owner_email")
@@ -328,36 +336,44 @@ def _render_oidc_account_setup() -> None:
         return
 
     if can_register_initial_owner():
-        st.subheader("Create the first workspace with SSO")
-        with st.form("google_initial_owner_form"):
-            username = st.text_input("Choose a username")
-            brand_name = st.text_input("Brand workspace name")
-            submitted = st.form_submit_button("Create Brand Owner account", type="primary")
-        if submitted:
-            try:
+        st.subheader("Create your first brand workspace with Google")
+    else:
+        st.subheader("Start your brand workspace with Google")
+    with st.form("google_brand_owner_form"):
+        username = st.text_input("Choose a username")
+        brand_name = st.text_input("Brand workspace name")
+        submitted = st.form_submit_button("Create my brand workspace", type="primary")
+    if submitted:
+        try:
+            if can_register_initial_owner():
                 register_initial_owner(
                     username, email, None, brand_name,
                     oidc_subject=subject, oidc_email_verified=email_verified,
                 )
-                session_token = login_oidc_identity(subject, email, email_verified)
-                principal = resolve_session(session_token)
-                brand = next(
-                    item for item in list_brands(principal)
-                    if item["role"] == "Brand Owner"
-                )
-            except sqlite3.IntegrityError:
-                st.error("That SSO account, username, or email is already registered.")
-            except (AuthenticationError, ValueError, PermissionError, StopIteration) as exc:
-                st.error(str(exc))
             else:
-                st.session_state["brl_session_token"] = session_token
-                st.session_state["brl_oidc_authenticated"] = True
-                st.session_state["active_brand_id"] = brand["id"]
-                st.query_params.clear()
-                st.rerun()
-        return
-
-    st.info("This SSO account needs an invitation or an existing verified workspace account.")
+                register_oidc_brand_owner(
+                    username,
+                    email,
+                    brand_name,
+                    oidc_subject=subject,
+                    oidc_email_verified=email_verified,
+                )
+            session_token = login_oidc_identity(subject, email, email_verified)
+            principal = resolve_session(session_token)
+            brand = next(
+                item for item in list_brands(principal)
+                if item["role"] == "Brand Owner"
+            )
+        except sqlite3.IntegrityError:
+            st.error("That Google account, username, or brand name is already in use.")
+        except (AuthenticationError, ValueError, PermissionError, StopIteration) as exc:
+            st.error(str(exc))
+        else:
+            st.session_state["brl_session_token"] = session_token
+            st.session_state["brl_oidc_authenticated"] = True
+            st.session_state["active_brand_id"] = brand["id"]
+            st.query_params.clear()
+            st.rerun()
 
 
 def _render_password_reset() -> bool:

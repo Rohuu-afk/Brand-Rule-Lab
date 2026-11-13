@@ -45,7 +45,13 @@ except Exception as exc:
         type(exc).__name__,
     )
 
-from services.auth_service import AuthenticationError, login_oidc_identity, logout, resolve_session
+from services.auth_service import (
+    AuthenticationError,
+    UnlinkedOIDCIdentityError,
+    login_oidc_identity,
+    logout,
+    resolve_session,
+)
 from services.brand_service import accept_invitation, list_brands
 
 # Apply schema + seed on initial server startup (seed applies migrations once).
@@ -110,6 +116,8 @@ elif principal is None:
             st.session_state["brl_session_token"] = oidc_token
             st.session_state["brl_oidc_authenticated"] = True
             principal = resolve_session(oidc_token)
+    except UnlinkedOIDCIdentityError:
+        pass
     except AuthenticationError as exc:
         st.session_state["brl_oidc_error"] = str(exc)
 

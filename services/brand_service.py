@@ -141,6 +141,73 @@ def register_initial_owner(
     return {"user_id": user_id, "brand_id": brand_id, "token": token}
 
 
+def register_oidc_brand_owner(
+    username: str, email: str, brand_name: str, *,
+    oidc_subject: str, oidc_email_verified: bool,
+) -> dict:
+    """Create an owner account and brand from a new verified OIDC identity."""
+    username = username.strip().casefold()
+    invite_email = _email(email)
+    clean_brand_name = brand_name.strip()
+    slug = _slugify(clean_brand_name)
+    subject = str(oidc_subject or "").strip()
+    if len(username) < 3:
+        raise ValueError("Username must contain at least 3 characters.")
+    if not subject or not oidc_email_verified:
+        raise ValueError("A verified OIDC identity is required.")
+
+    now = _now()
+    stamp = _timestamp(now)
+    password_hash = _hash_password(secrets.token_urlsafe(48))
+    with get_connection() as conn:
+        conn.execute("BEGIN IMMEDIATE")
+        try:
+            existing = conn.execute(
+                "SELECT 1 FROM users WHERE oidc_subject = ? OR email = ? COLLATE NOCASE",
+                (subject, invite_email),
+            ).fetchone()
+            if existing is not None:
+                raise ValueError(
+                    "This Google account already has an account. Sign in to it instead."
+                )
+            cursor = conn.execute(
+                """
+                INSERT INTO users
+                    (username, password_hash, role, is_active, email,
+                     email_verified_at, registration_pending, oidc_subject)
+                VALUES (?, ?, 'Reviewer', 1, ?, ?, 0, ?)
+                """,
+                (username, password_hash, invite_email, stamp, subject),
+            )
+            user_id = int(cursor.lastrowid)
+            brand = conn.execute(
+                "INSERT INTO brands (name, slug, created_by_user_id) "
+                "VALUES (?, ?, ?) RETURNING id",
+                (clean_brand_name, slug, user_id),
+            ).fetchone()
+            brand_id = int(brand["id"])
+            conn.execute(
+                "INSERT INTO brand_memberships (brand_id, user_id, role) "
+                "VALUES (?, ?, ?)",
+                (brand_id, user_id, BrandRole.OWNER.value),
+            )
+            _append_system_audit_event(
+                conn,
+                action="BRAND_CREATED",
+                object_type="brand",
+                actor_user_id=user_id,
+                actor_username=username,
+                object_id=brand_id,
+                brand_id=brand_id,
+                details={"name": clean_brand_name, "registration_method": "google"},
+            )
+            conn.commit()
+        except sqlite3.IntegrityError:
+            conn.rollback()
+            raise
+    return {"user_id": user_id, "brand_id": brand_id, "token": None}
+
+
 def get_invitation_details(token: str) -> dict | None:
     if not token or len(token) < 20:
         return None
