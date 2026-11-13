@@ -22,7 +22,13 @@ from typing import Any
 
 from ai.base import AIProviderError
 from db.connection import get_connection
-from models.enums import DraftStatus, FindingResult, FindingStatus, Severity, EvidenceRelationship, UserRole
+from models.enums import BrandRole, DraftStatus, FindingResult, FindingStatus, Severity, EvidenceRelationship, UserRole
+from services.auth_service import (
+    AuthenticatedPrincipal,
+    require_legacy_test_actor,
+    require_principal,
+)
+from services.brand_service import require_record_brand
 from models.schemas import (
     FACT_RANKING_SCHEMA,
     TONE_FINDINGS_SCHEMA,
@@ -39,8 +45,11 @@ from ai.base import safe_error_summary
 from engines.rule_engine import RegexExecutionBudget, run_rule
 from services.fact_service import get_eligible_fact_versions
 from services.guideline_service import get_all_products, get_guidelines_summary
-from services.asset_service import get_approved_asset
+from services.asset_service import get_approved_asset, get_approved_packaging_reference
 from services.claim_extraction import build_claim_candidates
+from services.audit_service import append_audit_event
+from services.review_event_writer import append_review_event, simulated_role_context
+from services.document_parser import ParseError, parse_file
 
 logger = logging.getLogger("brand_rule_lab.review")
 MAX_AI_REVIEW_CHARS = 30000
@@ -52,6 +61,69 @@ class _AIConsentNotGranted(RuntimeError):
 
 class _AIReviewTooLarge(RuntimeError):
     """Raised locally when a draft exceeds the bounded claim-extraction input size."""
+
+
+def _check_packaging_reference(
+    submitted_text: str, reference: dict
+) -> dict[str, str]:
+    """Compare visible OCR tokens with an approved packaging reference."""
+    try:
+        parsed = parse_file(reference["filename"], reference["data"])
+        reference_text = parsed.get("text", "")
+    except (ParseError, OSError, ValueError) as exc:
+        return {
+            "result": FindingResult.NOT_OBSERVED.value,
+            "quoted_text": "",
+            "explanation": (
+                f"Approved packaging reference '{reference['name']}' could not be read for OCR "
+                f"comparison ({type(exc).__name__}); no text comparison was performed."
+            ),
+            "suggested_correction": "Verify the submitted package artwork and reference manually, then upload a readable approved reference.",
+        }
+
+    tokenize = lambda value: re.findall(
+        r"[\w]+", unicodedata.normalize("NFKC", value).casefold()
+    )
+    submitted_tokens = tokenize(submitted_text or "")
+    reference_tokens = tokenize(reference_text or "")
+    if not submitted_tokens or not reference_tokens:
+        return {
+            "result": FindingResult.NOT_OBSERVED.value,
+            "quoted_text": "",
+            "explanation": (
+                f"OCR did not recover enough text from both the submitted artwork and approved "
+                f"packaging reference '{reference['name']}'; copy differences were not checked."
+            ),
+            "suggested_correction": "Check both package images manually and use higher-resolution artwork if needed.",
+        }
+
+    from collections import Counter
+
+    added = Counter(submitted_tokens) - Counter(reference_tokens)
+    missing = Counter(reference_tokens) - Counter(submitted_tokens)
+    if not added and not missing:
+        result = FindingResult.PASS.value
+        detail = "OCR token sets match."
+        quoted = ""
+    else:
+        result = FindingResult.FAIL.value
+        added_text = ", ".join(list(added.elements())[:12]) or "none"
+        missing_text = ", ".join(list(missing.elements())[:12]) or "none"
+        detail = f"New or changed OCR tokens: {added_text}. Missing reference tokens: {missing_text}."
+        quoted = detail
+    return {
+        "result": result,
+        "quoted_text": quoted,
+        "explanation": (
+            f"OCR copy comparison against approved packaging reference '{reference['name']}'. "
+            f"{detail} Text extraction can vary with image quality; a reviewer must confirm differences."
+        ),
+        "suggested_correction": (
+            "Confirm each packaging copy difference against the current approved artwork and product facts."
+            if result == FindingResult.FAIL.value
+            else "No OCR copy change was detected; continue the human visual and factual review."
+        ),
+    }
 
 
 def _generate_review_response(provider: Any, ai_consent: bool, prompt: str, **kwargs: Any) -> str:
@@ -842,6 +914,8 @@ def run_review(
     draft_version_id: int | None = None,
     content_type: str | None = None,
     ai_consent: bool = False,
+    principal: AuthenticatedPrincipal | None = None,
+    brand_id: int | None = None,
 ) -> dict[str, Any]:
     """
     Main entry point for the review pipeline.
@@ -876,6 +950,21 @@ def run_review(
     ai_response_metadata: dict[str, Any] = {}
     fact_ranking_circuit_open = False
     regex_budget = RegexExecutionBudget()
+    actor = require_principal(principal, action="run a content review") if principal else None
+    if actor is None:
+        require_legacy_test_actor("run a content review")
+    if actor is not None:
+        if brand_id is None:
+            raise ValueError("A brand is required to run this review.")
+        with get_connection() as conn:
+            require_record_brand(
+                conn, actor, brand_id, "drafts", draft_id,
+                roles=(BrandRole.OWNER, BrandRole.CREATOR),
+            )
+            if product_id is not None:
+                require_record_brand(conn, actor, brand_id, "products", product_id)
+            if brief_id is not None:
+                require_record_brand(conn, actor, brand_id, "campaign_briefs", brief_id)
     claim_extraction_findings: list[dict] = []
     visual_metadata_provided = visual_metadata is not None
     visual_metadata = dict(visual_metadata or {})
@@ -889,6 +978,7 @@ def run_review(
         content_type = draft_scope["content_type"] if draft_scope else None
     asset_check: dict[str, Any] | None = None
     asset_phash_check: dict[str, Any] | None = None
+    packaging_check: dict[str, str] | None = None
     asset_id = visual_metadata.get("asset_id")
     if source_type == "image":
         if asset_id is None:
@@ -904,7 +994,9 @@ def run_review(
                 "suggested_correction": "Re-upload a valid PNG or JPEG image to calculate its SHA-256 identity.",
             }
         else:
-            approved_asset = get_approved_asset(int(asset_id), product_id)
+            approved_asset = get_approved_asset(
+                int(asset_id), product_id, principal=actor, brand_id=brand_id
+            )
             if approved_asset is None:
                 asset_check = {
                     "result": FindingResult.NOT_OBSERVED.value,
@@ -962,6 +1054,25 @@ def run_review(
             ),
             "suggested_correction": "Upload the artwork itself as PNG or JPEG for exact image identity comparison.",
         }
+
+    packaging_reference_id = visual_metadata.get("packaging_reference_asset_id")
+    if source_type == "image" and packaging_reference_id is not None:
+        try:
+            approved_reference = get_approved_packaging_reference(
+                int(packaging_reference_id), product_id,
+                principal=actor, brand_id=brand_id,
+            )
+        except (TypeError, ValueError):
+            approved_reference = None
+        if approved_reference is None:
+            packaging_check = {
+                "result": FindingResult.NOT_OBSERVED.value,
+                "quoted_text": "",
+                "explanation": "Selected packaging reference is not active, approved, and registered for this product; copy comparison was not performed.",
+                "suggested_correction": "Select an active approved packaging reference for this product.",
+            }
+        else:
+            packaging_check = _check_packaging_reference(raw_text, approved_reference)
 
     logger.info(
         "Initiating review pipeline: draft_id=%s, product_id=%s, market=%s, channel=%s",
@@ -1278,6 +1389,7 @@ def run_review(
                 FROM brand_rules br
                 LEFT JOIN guidelines g ON g.id = br.guideline_id
                 WHERE br.is_active = 1 AND br.owner_approved = 1
+                  AND br.brand_id IS ?
                   AND ((g.id IS NOT NULL AND length(trim(g.content)) > 0)
                        OR (br.source_document_id IS NOT NULL
                            AND br.source_page IS NOT NULL
@@ -1285,7 +1397,7 @@ def run_review(
                   AND br.readiness_class = 'CODE_CHECKABLE'
                   AND (br.product_id = ? OR br.product_id IS NULL)
             """
-            rules = [dict(r) for r in conn.execute(rules_query, (product_id,)).fetchall()]
+            rules = [dict(r) for r in conn.execute(rules_query, (brand_id, product_id)).fetchall()]
         else:
             rules_query = """
                 SELECT br.*, g.title AS guideline_title, g.source_ref AS guideline_source_ref,
@@ -1299,6 +1411,7 @@ def run_review(
                 FROM brand_rules br
                 LEFT JOIN guidelines g ON g.id = br.guideline_id
                 WHERE br.is_active = 1 AND br.owner_approved = 1
+                  AND br.brand_id IS ?
                   AND ((g.id IS NOT NULL AND length(trim(g.content)) > 0)
                        OR (br.source_document_id IS NOT NULL
                            AND br.source_page IS NOT NULL
@@ -1306,7 +1419,7 @@ def run_review(
                   AND br.readiness_class = 'CODE_CHECKABLE'
                   AND br.product_id IS NULL
             """
-            rules = [dict(r) for r in conn.execute(rules_query).fetchall()]
+            rules = [dict(r) for r in conn.execute(rules_query, (brand_id,)).fetchall()]
 
     # ------------------------------------------------------------------
     # 4. Run deterministic rule engine
@@ -1427,6 +1540,21 @@ def run_review(
             "suggested_correction": asset_phash_check["suggested_correction"],
         })
 
+    if packaging_check:
+        all_findings.append({
+            "draft_version_id": draft_version_id,
+            "claim_mention_id": None,
+            "rule_id": None,
+            "fact_version_id": None,
+            "finding_type": "packaging_reference_text",
+            "result": packaging_check["result"],
+            "status": FindingStatus.OPEN.value,
+            "severity": Severity.MEDIUM.value,
+            "quoted_text": packaging_check["quoted_text"],
+            "explanation": packaging_check["explanation"],
+            "suggested_correction": packaging_check["suggested_correction"],
+        })
+
     # Run rules against full text first
     for rule in rules:
         if not is_rule_applicable(rule, product_id=product_id, market=market, channel=channel):
@@ -1533,8 +1661,11 @@ def run_review(
     # ------------------------------------------------------------------
     # 5. Fact matching per claim (filter deterministically, rank via AI)
     # ------------------------------------------------------------------
-    eligible_facts = get_eligible_fact_versions(draft_id=draft_id, product_id=product_id, market=market)
-    all_products = get_all_products()
+    eligible_facts = get_eligible_fact_versions(
+        draft_id=draft_id, product_id=product_id, market=market,
+        principal=actor, brand_id=brand_id,
+    )
+    all_products = get_all_products(principal=actor, brand_id=brand_id)
     fact_context_length = len(
         "\n".join(
             f"  ID {fact['fact_version_id']}: {fact['statement']} [{fact.get('evidence_ref', '')}]"
@@ -1821,6 +1952,7 @@ def run_review(
         market=market,
         channel=channel,
         content_type=content_type,
+        principal=actor, brand_id=brand_id,
     )
     brief_messages: list[str] = []
     brief_context: dict | None = None
@@ -1828,7 +1960,9 @@ def run_review(
     if brief_id:
         with get_connection() as conn:
             brief = conn.execute(
-                "SELECT * FROM campaign_briefs WHERE id = ? AND is_active = 1", (brief_id,)
+                "SELECT * FROM campaign_briefs WHERE id = ? AND is_active = 1"
+                + (" AND brand_id = ?" if actor is not None else ""),
+                (brief_id, brand_id) if actor is not None else (brief_id,),
             ).fetchone()
             if brief:
                 try:
@@ -1993,7 +2127,17 @@ def run_review(
         })
 
     unobserved_pages = (visual_metadata or {}).get("unobserved_pages", [])
+    unobserved_source_type = (visual_metadata or {}).get("unobserved_source_type")
     for page_number in unobserved_pages:
+        if unobserved_source_type == "video":
+            location = f"Video frame {page_number}"
+            explanation = (
+                f"Sampled video frame {page_number} had no extractable OCR text. "
+                "This frame is NOT_OBSERVED; other video moments were not sampled."
+            )
+        else:
+            location = f"Page {page_number}"
+            explanation = f"PDF page {page_number} had no extractable text and OCR could not check it."
         all_findings.append({
             "draft_version_id": draft_version_id,
             "claim_mention_id": None,
@@ -2003,8 +2147,8 @@ def run_review(
             "result": FindingResult.NOT_OBSERVED.value,
             "status": FindingStatus.OPEN.value,
             "severity": Severity.LOW.value,
-            "quoted_text": f"Page {page_number}",
-            "explanation": f"PDF page {page_number} had no extractable text and OCR could not check it.",
+            "quoted_text": location,
+            "explanation": explanation,
             "suggested_correction": None,
         })
 
@@ -2099,9 +2243,29 @@ def update_finding_status(
     status: str,
     creator_note: str | None = None,
     suggested_correction: str | None = None,
+    *,
+    principal: AuthenticatedPrincipal | None = None,
+    brand_id: int | None = None,
 ) -> None:
     """Update a finding's status and optional creator note / correction."""
     with get_connection() as conn:
+        if principal is not None:
+            actor = require_principal(principal, action="update a finding")
+            if brand_id is None:
+                raise ValueError("A brand is required to update a finding.")
+            finding = conn.execute(
+                "SELECT dv.draft_id FROM findings f JOIN draft_versions dv ON dv.id = f.draft_version_id WHERE f.id = ?",
+                (finding_id,),
+            ).fetchone()
+            if finding is None:
+                raise ValueError("Finding does not exist.")
+            from models.enums import BrandRole
+            require_record_brand(
+                conn, actor, brand_id, "drafts", finding["draft_id"],
+                roles=(BrandRole.OWNER, BrandRole.CREATOR),
+            )
+        else:
+            require_legacy_test_actor("update a finding")
         conn.execute(
             """
             UPDATE findings
@@ -2121,6 +2285,9 @@ def record_finding_override(
     decision: str,
     reason: str,
     reviewer: str = "demo_reviewer",
+    *,
+    principal: AuthenticatedPrincipal | None = None,
+    brand_id: int | None = None,
 ) -> None:
     """Append a Reviewer decision about a Creator dismissal of a high-impact issue."""
     decision = decision.strip().upper()
@@ -2128,22 +2295,36 @@ def record_finding_override(
         raise ValueError("Override decision must be ACCEPT or REJECT.")
     if not reason.strip():
         raise ValueError("A documented Reviewer reason is required.")
-    if not reviewer.strip():
-        raise ValueError("Reviewer identity is required.")
+    actor = require_principal(principal, action="record a Reviewer override") if principal else None
+    if actor is None:
+        require_legacy_test_actor("record a Reviewer override")
+        if not reviewer.strip():
+            raise ValueError("Reviewer identity is required.")
 
     with get_connection() as conn:
         finding = conn.execute(
             """
             SELECT f.status, f.severity, f.result, f.finding_type,
-                   f.creator_note, dv.draft_id
+                   f.creator_note, dv.draft_id, d.brand_id
             FROM findings f
             JOIN draft_versions dv ON dv.id = f.draft_version_id
+            JOIN drafts d ON d.id = dv.draft_id
             WHERE f.id = ?
             """,
             (finding_id,),
         ).fetchone()
         if finding is None:
             raise ValueError("Finding does not exist.")
+        if actor is not None:
+            if brand_id is None:
+                raise ValueError("A brand is required to record a Reviewer override.")
+            require_record_brand(
+                conn, actor, brand_id, "drafts", finding["draft_id"],
+                roles=(BrandRole.OWNER, BrandRole.REVIEWER),
+            )
+            if finding["brand_id"] != brand_id:
+                raise PermissionError("That finding is outside the selected brand.")
+            reviewer = actor.username
         if finding["status"] != FindingStatus.DISMISSED.value or not finding["creator_note"]:
             raise ValueError("Only a Creator dismissal with a documented reason can be reviewed.")
         if finding["finding_type"] == "fact_match":
@@ -2175,24 +2356,51 @@ def record_finding_override(
             """,
             (finding_id, reviewer.strip(), decision, normalized_reason),
         )
-        conn.execute(
-            """
-            INSERT INTO review_events (review_id, finding_id, event_type, actor, note)
-            VALUES (?, ?, 'OVERRIDE', ?, ?)
-            """,
-            (
-                review_id,
-                finding_id,
-                reviewer.strip(),
-                f"{decision} Creator dismissal: {normalized_reason}",
-            ),
+        role_at_event, provenance = (
+            (actor.role.value if hasattr(actor.role, "value") else str(actor.role), "AUTHENTICATED")
+            if actor is not None
+            else ("Reviewer", "DEMO_SIMULATED")
         )
+        append_review_event(
+            conn,
+            review_id=review_id,
+            finding_id=finding_id,
+            event_type="OVERRIDE",
+            actor=actor.username if actor else reviewer.strip(),
+            note=f"{decision} Creator dismissal: {normalized_reason}",
+            actor_role_at_event=role_at_event,
+            actor_role_provenance=provenance,
+        )
+        if actor is not None:
+            append_audit_event(
+                conn,
+                actor,
+                action="FINDING_OVERRIDE_RECORDED",
+                object_type="finding",
+                object_id=finding_id,
+                brand_id=brand_id,
+                details={"decision": decision, "reason": normalized_reason},
+            )
         conn.commit()
 
 
-def get_findings_for_draft_version(draft_version_id: int) -> list[dict]:
+def get_findings_for_draft_version(
+    draft_version_id: int,
+    *, principal: AuthenticatedPrincipal | None = None, brand_id: int | None = None,
+) -> list[dict]:
     """Return all findings for a draft version, joined with rule, guideline, and fact info."""
+    if principal is None:
+        require_legacy_test_actor("read unscoped review findings")
     with get_connection() as conn:
+        if principal is not None:
+            if brand_id is None:
+                raise ValueError("A brand is required for authenticated finding lookup.")
+            version = conn.execute(
+                "SELECT draft_id FROM draft_versions WHERE id = ?", (draft_version_id,)
+            ).fetchone()
+            if version is None:
+                return []
+            require_record_brand(conn, principal, brand_id, "drafts", version["draft_id"])
         rows = conn.execute(
             """
             SELECT f.*,
@@ -2261,6 +2469,8 @@ def create_draft_revision(
     ai_consent: bool = False,
     *,
     actor_role: UserRole | str | None = None,
+    principal: AuthenticatedPrincipal | None = None,
+    brand_id: int | None = None,
 ) -> int:
     """
     Create a new draft_version for an edited draft, preserving revision history.
@@ -2268,10 +2478,55 @@ def create_draft_revision(
     If auto_rereview is True, automatically runs the review pipeline on the new version.
     Returns the new draft_version_id.
     """
-    role_value = actor_role.value if isinstance(actor_role, UserRole) else str(actor_role or "")
-    if role_value.casefold() != UserRole.CREATOR.value.casefold():
-        raise PermissionError("Creator role required to create draft revisions.")
+    if principal is not None:
+        actor = require_principal(principal, action="create draft revisions")
+    else:
+        require_legacy_test_actor("create draft revisions")
+        actor = None
+        role_value = actor_role.value if isinstance(actor_role, UserRole) else str(actor_role or "")
+        if role_value.casefold() != UserRole.CREATOR.value.casefold():
+            raise PermissionError("Creator role required to create draft revisions.")
+    if not updated_text.strip():
+        raise ValueError("Revised draft content is required.")
+    if finding_id is not None and not (creator_note or "").strip():
+        raise ValueError("A reason is required when remediating a finding.")
     with get_connection() as conn:
+        draft = conn.execute(
+            "SELECT submitted_by_user_id FROM drafts WHERE id = ?" +
+            (" AND brand_id = ?" if brand_id is not None else ""),
+            (draft_id, brand_id) if brand_id is not None else (draft_id,),
+        ).fetchone()
+        if draft is None:
+            raise ValueError("Draft does not exist.")
+        if actor is not None:
+            if brand_id is None:
+                raise ValueError("A brand is required to revise this draft.")
+            from models.enums import BrandRole
+            require_record_brand(
+                conn, actor, brand_id, "drafts", draft_id,
+                roles=(BrandRole.OWNER, BrandRole.CREATOR),
+            )
+        if actor is not None and draft["submitted_by_user_id"] not in (None, actor.user_id):
+            raise PermissionError("Only the draft creator can create this revision.")
+        latest = conn.execute(
+            "SELECT id FROM draft_versions WHERE draft_id = ? "
+            "ORDER BY version_number DESC LIMIT 1",
+            (draft_id,),
+        ).fetchone()
+        if finding_id is not None:
+            finding = conn.execute(
+                """
+                SELECT f.draft_version_id
+                FROM findings f
+                JOIN draft_versions dv ON dv.id = f.draft_version_id
+                WHERE f.id = ? AND dv.draft_id = ?
+                """,
+                (finding_id, draft_id),
+            ).fetchone()
+            if finding is None:
+                raise ValueError("Finding does not belong to this draft.")
+            if latest is not None and finding["draft_version_id"] != latest["id"]:
+                raise ValueError("Remediation must target a finding from the latest draft version.")
         row = conn.execute(
             """
             SELECT COALESCE(MAX(version_number), 0) + 1 AS next_v
@@ -2327,9 +2582,33 @@ def create_draft_revision(
             (draft_id,),
         ).fetchone()
         if review:
-            conn.execute(
-                "INSERT INTO review_events (review_id, event_type, actor, note) VALUES (?, 'COMMENT', 'demo_creator', ?)",
-                (review["id"], f"Draft revision v{next_v} created: {creator_note or 'Creator updated copy'}"),
+            role_at_event, provenance = (
+                (actor.role.value if hasattr(actor.role, "value") else str(actor.role), "AUTHENTICATED")
+                if actor is not None
+                else ("Creator", "DEMO_SIMULATED")
+            )
+            append_review_event(
+                conn,
+                review_id=review["id"],
+                event_type="COMMENT",
+                actor=actor.username if actor else "demo_creator",
+                note=f"Draft revision v{next_v} created: {creator_note or 'Creator updated copy'}",
+                actor_role_at_event=role_at_event,
+                actor_role_provenance=provenance,
+            )
+        if actor is not None:
+            append_audit_event(
+                conn,
+                actor,
+                action="DRAFT_REMEDIATION_PROPOSED",
+                object_type="draft",
+                object_id=draft_id,
+                brand_id=brand_id,
+                details={
+                    "new_version": next_v,
+                    "finding_id": finding_id,
+                    "reason": (creator_note or "").strip(),
+                },
             )
 
         conn.commit()
@@ -2367,6 +2646,8 @@ def create_draft_revision(
                 visual_metadata=visual_metadata,
                 draft_version_id=new_version_id,
                 ai_consent=ai_consent,
+                principal=principal,
+                brand_id=brand_id,
             )
         except Exception as exc:
             logger.error(
@@ -2384,12 +2665,20 @@ def record_review_event(
     event_type: str,
     actor: str,
     note: str | None = None,
+    actor_role: str | None = None,
 ) -> None:
     """Record an audit trail event in review_events."""
+    require_legacy_test_actor("record a raw review event")
+    role_at_event, provenance = simulated_role_context(actor_role) if actor_role else (None, "NO_TRUSTED_CONTEXT")
     with get_connection() as conn:
-        conn.execute(
-            "INSERT INTO review_events (review_id, event_type, actor, note) VALUES (?, ?, ?, ?)",
-            (review_id, event_type, actor, note),
+        append_review_event(
+            conn,
+            review_id=review_id,
+            event_type=event_type,
+            actor=actor,
+            note=note,
+            actor_role_at_event=role_at_event,
+            actor_role_provenance=provenance,
         )
         conn.commit()
 
@@ -2399,11 +2688,27 @@ def request_guideline_clarification(
     finding_id: int,
     note: str,
     actor: str = "demo_creator",
+    *, principal: AuthenticatedPrincipal | None = None, brand_id: int | None = None,
 ) -> None:
     """Record an explicit, auditable clarification request and escalation."""
     if not note.strip():
         raise ValueError("A clarification request needs a documented reason.")
+    authenticated_actor = (
+        require_principal(principal, action="request guideline clarification")
+        if principal is not None else None
+    )
+    if authenticated_actor is None:
+        require_legacy_test_actor("request guideline clarification")
     with get_connection() as conn:
+        if authenticated_actor is not None:
+            if brand_id is None:
+                raise ValueError("A brand is required to request clarification.")
+            from models.enums import BrandRole
+            require_record_brand(
+                conn, authenticated_actor, brand_id, "drafts", draft_id,
+                roles=(BrandRole.OWNER, BrandRole.CREATOR),
+            )
+            actor = authenticated_actor.username
         finding = conn.execute(
             """
             SELECT f.id FROM findings f
@@ -2425,10 +2730,20 @@ def request_guideline_clarification(
         else:
             review_id = review["id"]
         event_note = f"GUIDELINE_CLARIFICATION: Finding #{finding_id}: {note.strip()}"
-        conn.execute(
-            "INSERT INTO review_events (review_id, event_type, actor, note) "
-            "VALUES (?, 'ESCALATED', ?, ?)",
-            (review_id, actor, event_note),
+        role_at_event, provenance = (
+            (authenticated_actor.role.value if hasattr(authenticated_actor.role, "value") else str(authenticated_actor.role), "AUTHENTICATED")
+            if authenticated_actor is not None
+            else ("Creator", "DEMO_SIMULATED")
+        )
+        append_review_event(
+            conn,
+            review_id=review_id,
+            finding_id=finding_id,
+            event_type="ESCALATED",
+            actor=actor,
+            note=event_note,
+            actor_role_at_event=role_at_event,
+            actor_role_provenance=provenance,
         )
         conn.execute(
             """

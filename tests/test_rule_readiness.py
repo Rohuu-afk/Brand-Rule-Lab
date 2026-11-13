@@ -51,6 +51,7 @@ def isolated_rule_database(tmp_path, monkeypatch):
     database = tmp_path / "rule-readiness.sqlite"
     monkeypatch.setenv("DATABASE_PATH", str(database))
     monkeypatch.setenv("UPLOADS_PATH", str(tmp_path / "uploads"))
+    monkeypatch.setenv("BRL_ENABLE_LEGACY_TEST_ACTORS", "1")
     apply_schema()
     yield database
 
@@ -389,7 +390,7 @@ def test_approved_rule_provenance_and_history_survive_schema_reapplication(
         ).fetchone()["event_type"] == "APPROVED"
         assert [row["version"] for row in conn.execute(
             "SELECT version FROM schema_migrations ORDER BY version"
-        )] == [1, 2, 3, 4, 5, 6, 7]
+        )] == list(range(1, 18))
 
     apply_schema()
     with get_connection() as conn:

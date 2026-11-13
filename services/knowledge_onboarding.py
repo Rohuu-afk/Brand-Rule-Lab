@@ -16,12 +16,19 @@ from ai.prompts import (
     build_knowledge_extraction_repair_prompt,
 )
 from db.connection import get_connection
-from models.enums import UserRole
+from models.enums import BrandRole, UserRole
 from models.schemas import (
     AIResponseValidationError,
     validate_knowledge_extraction_response,
 )
 from services.document_parser import MAX_BYTES, ParseError, parse_for_onboarding
+from services.auth_service import (
+    AuthenticatedPrincipal,
+    require_legacy_test_actor,
+    require_principal,
+)
+from services.audit_service import append_audit_event
+from services.brand_service import require_brand_membership, require_record_brand
 
 
 _CATEGORIES = {
@@ -45,6 +52,32 @@ class KnowledgeOnboardingError(ValueError):
     """An uploaded source or AI proposal could not be safely processed."""
 
 
+def _audit_knowledge_change(
+    conn: sqlite3.Connection, principal: AuthenticatedPrincipal | None, *,
+    action: str, object_type: str, object_id: int | None, brand_id: int | None,
+    details: dict[str, Any] | None = None,
+) -> None:
+    if principal is not None:
+        append_audit_event(
+            conn, principal, action=action, object_type=object_type,
+            object_id=object_id, brand_id=brand_id, details=details,
+        )
+
+
+def _require_knowledge_access(
+    principal: AuthenticatedPrincipal | None,
+    brand_id: int | None,
+    action: str,
+) -> None:
+    """Fail closed for normal callers; keep unscoped access only for legacy tests."""
+    if principal is None:
+        require_legacy_test_actor(action)
+        return
+    if brand_id is None:
+        raise ValueError(f"A brand is required to {action}.")
+    require_brand_membership(principal, brand_id)
+
+
 def save_brand_profile(
     brand: str,
     industry: str = "",
@@ -52,7 +85,16 @@ def save_brand_profile(
     description: str = "",
     personality: str = "",
     visual_identity: str = "",
+    *,
+    principal: AuthenticatedPrincipal | None = None,
+    brand_id: int | None = None,
 ) -> None:
+    _require_knowledge_access(principal, brand_id, "save brand identity")
+    actor = require_principal(principal, action="save brand identity") if principal else None
+    if actor is not None:
+        if brand_id is None:
+            raise ValueError("A brand is required to save brand identity.")
+        brand = require_brand_membership(actor, brand_id, (BrandRole.OWNER,))["name"]
     brand = brand.strip()
     if not brand:
         raise ValueError("Brand name is required.")
@@ -73,11 +115,27 @@ def save_brand_profile(
                 personality.strip(), visual_identity.strip(),
             ),
         )
+        _audit_knowledge_change(
+            conn, actor, action="BRAND_PROFILE_UPDATED", object_type="brand_profile",
+            object_id=brand_id, brand_id=brand_id,
+        )
         conn.commit()
 
 
-def get_brand_profiles() -> list[dict]:
+def get_brand_profiles(
+    principal: AuthenticatedPrincipal | None = None,
+    brand_id: int | None = None,
+) -> list[dict]:
+    _require_knowledge_access(principal, brand_id, "read brand identity")
     with get_connection() as conn:
+        if principal is not None:
+            if brand_id is None:
+                raise ValueError("A brand is required for authenticated profile lookup.")
+            membership = require_brand_membership(principal, brand_id)
+            return [dict(row) for row in conn.execute(
+                "SELECT * FROM brand_profiles WHERE brand = ? ORDER BY brand",
+                (membership["name"],),
+            ).fetchall()]
         return [dict(row) for row in conn.execute(
             "SELECT * FROM brand_profiles ORDER BY brand"
         ).fetchall()]
@@ -88,24 +146,40 @@ def create_onboarding_product(
     brand: str,
     description: str = "",
     market: str = "",
+    *,
+    principal: AuthenticatedPrincipal | None = None,
+    brand_id: int | None = None,
 ) -> int:
+    _require_knowledge_access(principal, brand_id, "create a product")
+    actor = require_principal(principal, action="create a product") if principal else None
+    if actor is not None:
+        if brand_id is None:
+            raise ValueError("A brand is required to create a product.")
+        brand = require_brand_membership(
+            actor, brand_id, (BrandRole.OWNER, BrandRole.FACT_OWNER)
+        )["name"]
     name, brand = name.strip(), brand.strip()
     if not name or not brand:
         raise ValueError("Product and brand names are required.")
     markets = [market.strip()] if market.strip() else []
     with get_connection() as conn:
         existing = conn.execute(
-            "SELECT id FROM products WHERE name = ? AND brand = ?",
-            (name, brand),
+            "SELECT id FROM products WHERE name = ? AND brand = ?"
+            + (" AND brand_id = ?" if actor is not None else ""),
+            (name, brand, brand_id) if actor is not None else (name, brand),
         ).fetchone()
         if existing:
             return int(existing["id"])
         cursor = conn.execute(
-            "INSERT INTO products (name, brand, description, markets) VALUES (?, ?, ?, ?)",
-            (name, brand, description.strip(), json.dumps(markets)),
+            "INSERT INTO products (name, brand, description, markets, brand_id) VALUES (?, ?, ?, ?, ?)",
+            (name, brand, description.strip(), json.dumps(markets), brand_id if actor else None),
+        )
+        _audit_knowledge_change(
+            conn, actor, action="PRODUCT_CREATED", object_type="product",
+            object_id=int(cursor.lastrowid), brand_id=brand_id,
         )
         conn.commit()
-        return int(cursor.lastrowid)
+    return int(cursor.lastrowid)
 
 
 def save_source_document(
@@ -118,7 +192,16 @@ def save_source_document(
     market: str | None = None,
     channel: str | None = None,
     content_type: str | None = None,
+    *,
+    principal: AuthenticatedPrincipal | None = None,
+    brand_id: int | None = None,
 ) -> int:
+    _require_knowledge_access(principal, brand_id, "upload brand knowledge")
+    actor = require_principal(principal, action="upload brand knowledge") if principal else None
+    if actor is not None:
+        if brand_id is None:
+            raise ValueError("A brand is required to upload a source document.")
+        require_brand_membership(actor, brand_id)
     if not data or len(data) > MAX_BYTES:
         raise KnowledgeOnboardingError("The document is empty or exceeds the upload size limit.")
     if not document_type.strip() or not purpose.strip():
@@ -131,13 +214,15 @@ def save_source_document(
         raise KnowledgeOnboardingError(str(exc)) from exc
     mime_type = mimetypes.guess_type(filename)[0] or "application/octet-stream"
     with get_connection() as conn:
+        if actor is not None and product_id is not None:
+            require_record_brand(conn, actor, brand_id, "products", product_id)
         cursor = conn.execute(
             """
             INSERT INTO knowledge_documents
                 (filename, document_type, purpose, product_id, market, mime_type,
                  channel, content_type, original_bytes, extracted_text, page_records,
-                 extraction_status, uploaded_by)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                 extraction_status, uploaded_by, brand_id)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 Path(filename).name, document_type.strip(), purpose.strip(), product_id,
@@ -146,14 +231,32 @@ def save_source_document(
                 content_type.strip() if content_type and content_type.strip() else None, data,
                 parsed["text"], json.dumps(parsed["page_records"], ensure_ascii=False),
                 parsed["extraction_status"], uploaded_by.strip() or "demo_user",
+                brand_id if actor else None,
             ),
+        )
+        _audit_knowledge_change(
+            conn, actor, action="SOURCE_DOCUMENT_UPLOADED",
+            object_type="knowledge_document", object_id=int(cursor.lastrowid),
+            brand_id=brand_id,
         )
         conn.commit()
         return int(cursor.lastrowid)
 
 
-def get_source_documents() -> list[dict]:
+def get_source_documents(
+    principal: AuthenticatedPrincipal | None = None,
+    brand_id: int | None = None,
+) -> list[dict]:
+    _require_knowledge_access(principal, brand_id, "read source documents")
     with get_connection() as conn:
+        params: tuple = ()
+        scope = ""
+        if principal is not None:
+            if brand_id is None:
+                raise ValueError("A brand is required for authenticated source lookup.")
+            require_brand_membership(principal, brand_id)
+            scope = " WHERE d.brand_id = ?"
+            params = (brand_id,)
         rows = conn.execute(
             """
             SELECT d.id, d.filename, d.document_type, d.purpose, d.product_id, d.market,
@@ -161,8 +264,7 @@ def get_source_documents() -> list[dict]:
                    d.ai_extraction_status, d.ai_extraction_error, d.ai_extraction_at,
                    d.created_at, p.name AS product_name
             FROM knowledge_documents d LEFT JOIN products p ON p.id = d.product_id
-            ORDER BY d.created_at DESC, d.id DESC
-            """
+            """ + scope + " ORDER BY d.created_at DESC, d.id DESC", params
         ).fetchall()
     results = []
     for row in rows:
@@ -172,8 +274,17 @@ def get_source_documents() -> list[dict]:
     return results
 
 
-def get_source_document(document_id: int) -> dict:
+def get_source_document(
+    document_id: int,
+    principal: AuthenticatedPrincipal | None = None,
+    brand_id: int | None = None,
+) -> dict:
+    _require_knowledge_access(principal, brand_id, "read a source document")
     with get_connection() as conn:
+        if principal is not None:
+            if brand_id is None:
+                raise ValueError("A brand is required for authenticated source lookup.")
+            require_record_brand(conn, principal, brand_id, "knowledge_documents", document_id)
         row = conn.execute(
             "SELECT * FROM knowledge_documents WHERE id = ?", (document_id,)
         ).fetchone()
@@ -184,10 +295,18 @@ def get_source_document(document_id: int) -> dict:
     return document
 
 
-def correct_extracted_page(document_id: int, page_number: int, corrected_text: str) -> None:
+def correct_extracted_page(
+    document_id: int, page_number: int, corrected_text: str,
+    *, principal: AuthenticatedPrincipal | None = None, brand_id: int | None = None,
+) -> None:
+    _require_knowledge_access(principal, brand_id, "correct extracted document text")
     if not corrected_text.strip():
         raise ValueError("Corrected page text cannot be empty.")
     with get_connection() as conn:
+        if principal is not None:
+            if brand_id is None:
+                raise ValueError("A brand is required to correct extracted text.")
+            require_record_brand(conn, principal, brand_id, "knowledge_documents", document_id)
         row = conn.execute(
             "SELECT page_records FROM knowledge_documents WHERE id = ?", (document_id,)
         ).fetchone()
@@ -243,11 +362,20 @@ def correct_extracted_page(document_id: int, page_number: int, corrected_text: s
                 conn, refreshed, "SOURCE_INVALIDATED", "Source correction",
                 f"Page {page_number} text was corrected; provenance must be reviewed again.",
             )
+        _audit_knowledge_change(
+            conn, principal, action="SOURCE_PAGE_CORRECTED",
+            object_type="knowledge_document", object_id=document_id,
+            brand_id=brand_id,
+            details={"page_number": page_number, "invalidated_entries": len(affected)},
+        )
         conn.commit()
 
 
-def get_original_page_preview(document_id: int, page_number: int) -> bytes | None:
-    document = get_source_document(document_id)
+def get_original_page_preview(
+    document_id: int, page_number: int,
+    *, principal: AuthenticatedPrincipal | None = None, brand_id: int | None = None,
+) -> bytes | None:
+    document = get_source_document(document_id, principal, brand_id)
     if Path(document["filename"]).suffix.lower() != ".pdf":
         return None
     try:
@@ -394,14 +522,19 @@ def _knowledge_entry_fingerprint(entry: dict[str, Any]) -> tuple[str, str, str]:
     )
 
 
-def extract_document_proposals(document_id: int, provider: Any | None = None) -> dict:
-    document = get_source_document(document_id)
-    _record_ai_extraction(document_id, "RUNNING")
+def extract_document_proposals(
+    document_id: int, provider: Any | None = None,
+    *, principal: AuthenticatedPrincipal | None = None, brand_id: int | None = None,
+) -> dict:
+    _require_knowledge_access(principal, brand_id, "extract knowledge proposals")
+    document = get_source_document(document_id, principal, brand_id)
+    _record_ai_extraction(document_id, "RUNNING", principal=principal, brand_id=brand_id)
     pages = [page for page in document["page_records"] if page["text"].strip()]
     if not pages:
         _record_ai_extraction(
             document_id, "FAILED",
             "No readable extracted text is available. Correct the text or upload a clearer file.",
+            principal=principal, brand_id=brand_id,
         )
         raise KnowledgeOnboardingError(
             "No readable text is available for AI extraction. Correct the text manually or upload a clearer file."
@@ -410,6 +543,7 @@ def extract_document_proposals(document_id: int, provider: Any | None = None) ->
         _record_ai_extraction(
             document_id, "FAILED",
             "The 30,000-character extraction limit was exceeded; split the source document.",
+            principal=principal, brand_id=brand_id,
         )
         raise KnowledgeOnboardingError(
             "This document contains more than 30,000 characters of extracted text. "
@@ -425,7 +559,9 @@ def extract_document_proposals(document_id: int, provider: Any | None = None) ->
                 f"AI provider request failed ({type(exc).__name__}). "
                 "Retry or enter knowledge manually."
             )
-            _record_ai_extraction(document_id, "FAILED", failure)
+            _record_ai_extraction(
+                document_id, "FAILED", failure, principal=principal, brand_id=brand_id
+            )
             raise KnowledgeOnboardingError(
                 "The configured AI provider is unavailable. The uploaded document is saved; "
                 "you can correct its text and add knowledge manually."
@@ -590,19 +726,22 @@ def extract_document_proposals(document_id: int, provider: Any | None = None) ->
         if details:
             failure += f" Failed chunks: {details}."
         _record_ai_extraction(
-            document_id, "FAILED", failure
+            document_id, "FAILED", failure, principal=principal, brand_id=brand_id
         )
         raise KnowledgeOnboardingError(
             f"{failure} The document remains saved and extraction is marked FAILED."
         )
     try:
         created = _insert_entries(
-            accepted, document_id=document_id, actor="AI proposal"
+            accepted, document_id=document_id,
+            actor=(principal.username if principal else "AI proposal"),
+            principal=principal, brand_id=brand_id,
         )
     except Exception:
         _record_ai_extraction(
             document_id, "FAILED",
             "AI proposals could not be saved to the local database.",
+            principal=principal, brand_id=brand_id,
         )
         raise
     rejected = (
@@ -617,7 +756,9 @@ def extract_document_proposals(document_id: int, provider: Any | None = None) ->
     if failed_chunks:
         messages.append("Failed chunks: " + "; ".join(failed_chunks) + ".")
     message = " ".join(messages) or None
-    _record_ai_extraction(document_id, status, message)
+    _record_ai_extraction(
+        document_id, status, message, principal=principal, brand_id=brand_id
+    )
     return {
         "created": len(created),
         "rejected": rejected,
@@ -637,21 +778,30 @@ def extract_document_proposals(document_id: int, provider: Any | None = None) ->
 
 
 def _record_ai_extraction(
-    document_id: int, status: str, error: str | None = None
+    document_id: int, status: str, error: str | None = None,
+    *, principal: AuthenticatedPrincipal | None = None, brand_id: int | None = None,
 ) -> None:
     with get_connection() as conn:
+        if principal is not None:
+            if brand_id is None:
+                raise ValueError("A brand is required to update source extraction status.")
+            require_record_brand(conn, principal, brand_id, "knowledge_documents", document_id)
         cursor = conn.execute(
             """
             UPDATE knowledge_documents
             SET ai_extraction_status = ?,
                 ai_extraction_error = ?,
                 ai_extraction_at = strftime('%Y-%m-%dT%H:%M:%SZ','now')
-            WHERE id = ?
-            """,
-            (status, error, document_id),
+            WHERE id = ?""" + (" AND brand_id = ?" if principal is not None else ""),
+            (status, error, document_id, brand_id) if principal is not None else (status, error, document_id),
         )
         if cursor.rowcount != 1:
             raise ValueError(f"Source document {document_id} does not exist.")
+        _audit_knowledge_change(
+            conn, principal, action="AI_EXTRACTION_STATUS_CHANGED",
+            object_type="knowledge_document", object_id=document_id,
+            brand_id=brand_id, details={"status": status},
+        )
         conn.commit()
 
 
@@ -666,7 +816,13 @@ def add_manual_entry(
     document_id: int | None = None,
     source_page: int | None = None,
     source_quote: str | None = None,
+    *, principal: AuthenticatedPrincipal | None = None, brand_id: int | None = None,
 ) -> int:
+    actor = require_principal(principal, action="add brand knowledge") if principal else None
+    if actor is not None:
+        if brand_id is None:
+            raise ValueError("A brand is required to add knowledge.")
+        require_brand_membership(actor, brand_id)
     if category not in _CATEGORIES or not content.strip():
         raise ValueError("Choose a valid category and enter the proposed knowledge.")
     if category == "ASSET" and not document_id:
@@ -679,7 +835,7 @@ def add_manual_entry(
         raise ValueError("Select the source page for the quotation.")
     source_quote_verified = False
     if document_id and source_page_text and source_quote:
-        document = get_source_document(document_id)
+        document = get_source_document(document_id, actor, brand_id)
         page = next(
             (item for item in document["page_records"] if str(item["page_number"]) == source_page_text),
             None,
@@ -704,12 +860,28 @@ def add_manual_entry(
         "source_quote": source_quote,
         "confidence": None,
         "warnings": warnings,
-    }], document_id=document_id, actor="Manual proposal")[0]
+    }], document_id=document_id, actor=(actor.username if actor else "Manual proposal"),
+        principal=actor, brand_id=brand_id)[0]
 
 
-def _insert_entries(entries: list[dict], document_id: int | None, actor: str) -> list[int]:
+def _insert_entries(
+    entries: list[dict], document_id: int | None, actor: str,
+    *, principal: AuthenticatedPrincipal | None = None, brand_id: int | None = None,
+) -> list[int]:
     created: list[int] = []
     with get_connection() as conn:
+        if principal is not None:
+            if brand_id is None:
+                raise ValueError("A brand is required to save knowledge proposals.")
+            require_brand_membership(principal, brand_id)
+            for item in entries:
+                if item.get("product_id") is not None:
+                    require_record_brand(
+                        conn, principal, brand_id, "products", item["product_id"]
+                    )
+            if document_id is not None:
+                require_record_brand(conn, principal, brand_id, "knowledge_documents", document_id)
+        scoped_brand_id = brand_id if principal is not None else None
         for item in entries:
             quote_verified = bool(
                 document_id
@@ -732,8 +904,8 @@ def _insert_entries(entries: list[dict], document_id: int | None, actor: str) ->
                     (document_id, category, content, explanation, product_id, market,
                      channel, content_type, source_page, source_quote, confidence, warnings,
                      rule_readiness_classification, rule_checking_method,
-                     source_quote_verified, source_support_confirmed)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0)
+                     source_quote_verified, source_support_confirmed, brand_id)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?)
                 """,
                 (
                     document_id, item["category"], item["content"], item["explanation"],
@@ -743,11 +915,16 @@ def _insert_entries(entries: list[dict], document_id: int | None, actor: str) ->
                     json.dumps(warnings, ensure_ascii=False),
                     "UNCLEAR" if item["category"] in _RULE_CATEGORIES else None,
                     _DEFAULT_RULE_METHOD if item["category"] in _RULE_CATEGORIES else None,
-                    int(quote_verified),
+                    int(quote_verified), scoped_brand_id,
                 ),
             )
             entry_id = int(cursor.lastrowid)
             created.append(entry_id)
+            _audit_knowledge_change(
+                conn, principal, action="KNOWLEDGE_PROPOSAL_CREATED",
+                object_type="knowledge_entry", object_id=entry_id,
+                brand_id=brand_id, details={"category": item["category"]},
+            )
             conn.execute(
                 """
                 INSERT INTO knowledge_entry_versions
@@ -815,6 +992,7 @@ def _source_quote_matches_page(
 def _require_source_reviewer(
     category: str, actor_role: UserRole | str | None
 ) -> None:
+    require_legacy_test_actor("make a source-provenance decision")
     role_value = actor_role.value if isinstance(actor_role, UserRole) else str(actor_role or "")
     role = role_value.strip().casefold()
     allowed = (
@@ -830,6 +1008,7 @@ def _require_source_reviewer(
 def _require_knowledge_role(
     category: str, actor_role: UserRole | str | None, action: str
 ) -> None:
+    require_legacy_test_actor(f"{action} knowledge entries")
     role_value = actor_role.value if isinstance(actor_role, UserRole) else str(actor_role or "")
     role = role_value.strip().casefold()
     allowed = (
@@ -840,6 +1019,28 @@ def _require_knowledge_role(
     if role not in allowed:
         required = "Fact Owner" if "fact owner" in allowed else "Reviewer"
         raise PermissionError(f"{required} demo role required to {action} {category.replace('_', ' ').lower()}.")
+
+
+def _require_entry_brand(
+    conn: sqlite3.Connection,
+    principal: AuthenticatedPrincipal,
+    brand_id: int | None,
+    entry_id: int,
+    category: str,
+    action: str,
+) -> AuthenticatedPrincipal:
+    actor = require_principal(principal, action=action)
+    if brand_id is None:
+        raise ValueError(f"A brand is required to {action}.")
+    roles = (
+        (BrandRole.OWNER, BrandRole.FACT_OWNER)
+        if category in {"PRODUCT_FACT", "EVIDENCE", "ASSET"}
+        else (BrandRole.OWNER, BrandRole.REVIEWER)
+    )
+    require_record_brand(
+        conn, actor, brand_id, "knowledge_entries", entry_id, roles=roles
+    )
+    return actor
 
 
 def _set_latest_version_provenance(
@@ -901,6 +1102,8 @@ def verify_source_quote_location(
     actor: str,
     *,
     actor_role: UserRole | str | None = None,
+    principal: AuthenticatedPrincipal | None = None,
+    brand_id: int | None = None,
 ) -> None:
     with get_connection() as conn:
         entry = conn.execute(
@@ -910,7 +1113,14 @@ def verify_source_quote_location(
             "PENDING_APPROVAL", "NEEDS_CLARIFICATION", "UNRESOLVED"
         }:
             raise ValueError("Only pending proposals can have source quotations verified.")
-        _require_source_reviewer(entry["category"], actor_role)
+        if principal is not None:
+            actor = _require_entry_brand(
+                conn, principal, brand_id, entry_id, entry["category"],
+                "verify a knowledge source quotation",
+            )
+            actor = actor.username
+        else:
+            _require_source_reviewer(entry["category"], actor_role)
         if not _source_quote_matches_page(
             conn, entry["document_id"], entry["source_page"], entry["source_quote"]
         ):
@@ -932,6 +1142,10 @@ def verify_source_quote_location(
             conn, updated, "SOURCE_QUOTE_VERIFIED", actor,
             "Exact quotation located on the selected document page.",
         )
+        _audit_knowledge_change(
+            conn, principal, action="SOURCE_QUOTE_VERIFIED",
+            object_type="knowledge_entry", object_id=entry_id, brand_id=brand_id,
+        )
         conn.commit()
 
 
@@ -941,6 +1155,8 @@ def confirm_source_support(
     note: str = "",
     *,
     actor_role: UserRole | str | None = None,
+    principal: AuthenticatedPrincipal | None = None,
+    brand_id: int | None = None,
 ) -> None:
     with get_connection() as conn:
         entry = conn.execute(
@@ -950,7 +1166,14 @@ def confirm_source_support(
             "PENDING_APPROVAL", "NEEDS_CLARIFICATION", "UNRESOLVED"
         }:
             raise ValueError("Only pending proposals can receive source-support confirmation.")
-        _require_source_reviewer(entry["category"], actor_role)
+        if principal is not None:
+            authenticated_actor = _require_entry_brand(
+                conn, principal, brand_id, entry_id, entry["category"],
+                "confirm knowledge source support",
+            )
+            actor = authenticated_actor.username
+        else:
+            _require_source_reviewer(entry["category"], actor_role)
         if not entry["source_quote_verified"]:
             raise ValueError("Verify the quotation on its source page before confirming support.")
         if not _source_quote_matches_page(
@@ -987,6 +1210,10 @@ def confirm_source_support(
         _append_rule_provenance_history(
             conn, updated, "SOURCE_SUPPORT_CONFIRMED", actor,
             note.strip() or "Reviewer confirmed the quotation supports the proposed knowledge.",
+        )
+        _audit_knowledge_change(
+            conn, principal, action="SOURCE_SUPPORT_CONFIRMED",
+            object_type="knowledge_entry", object_id=entry_id, brand_id=brand_id,
         )
         conn.commit()
 
@@ -1067,7 +1294,11 @@ def _record_related_entries(conn: sqlite3.Connection, entry_id: int) -> None:
             )
 
 
-def get_knowledge_entries(status: str | None = None) -> list[dict]:
+def get_knowledge_entries(
+    status: str | None = None,
+    *, principal: AuthenticatedPrincipal | None = None, brand_id: int | None = None,
+) -> list[dict]:
+    _require_knowledge_access(principal, brand_id, "read knowledge entries")
     query = """
         SELECT e.*, d.filename AS source_filename, p.name AS product_name
         FROM knowledge_entries e
@@ -1075,9 +1306,18 @@ def get_knowledge_entries(status: str | None = None) -> list[dict]:
         LEFT JOIN products p ON p.id = e.product_id
     """
     params: list[Any] = []
+    filters = []
+    if principal is not None:
+        if brand_id is None:
+            raise ValueError("A brand is required for authenticated knowledge lookup.")
+        require_brand_membership(principal, brand_id)
+        filters.append("e.brand_id = ?")
+        params.append(brand_id)
     if status:
-        query += " WHERE e.status = ?"
+        filters.append("e.status = ?")
         params.append(status)
+    if filters:
+        query += " WHERE " + " AND ".join(filters)
     query += " ORDER BY e.created_at DESC, e.id DESC"
     with get_connection() as conn:
         rows = conn.execute(query, params).fetchall()
@@ -1090,7 +1330,11 @@ def get_knowledge_entries(status: str | None = None) -> list[dict]:
     return results
 
 
-def get_knowledge_conflicts(unresolved_only: bool = False) -> list[dict]:
+def get_knowledge_conflicts(
+    unresolved_only: bool = False,
+    *, principal: AuthenticatedPrincipal | None = None, brand_id: int | None = None,
+) -> list[dict]:
+    _require_knowledge_access(principal, brand_id, "read knowledge conflicts")
     query = """
         SELECT c.*, a.content AS first_content, a.category AS first_category,
                a.source_quote AS first_quote, da.filename AS first_source,
@@ -1102,11 +1346,21 @@ def get_knowledge_conflicts(unresolved_only: bool = False) -> list[dict]:
         LEFT JOIN knowledge_documents da ON da.id = a.document_id
         LEFT JOIN knowledge_documents db ON db.id = b.document_id
     """
+    filters = []
+    params: tuple = ()
+    if principal is not None:
+        if brand_id is None:
+            raise ValueError("A brand is required for authenticated conflict lookup.")
+        require_brand_membership(principal, brand_id)
+        filters.append("a.brand_id = ? AND b.brand_id = ?")
+        params = (brand_id, brand_id)
     if unresolved_only:
-        query += " WHERE c.status = 'UNRESOLVED'"
+        filters.append("c.status = 'UNRESOLVED'")
+    if filters:
+        query += " WHERE " + " AND ".join(filters)
     query += " ORDER BY c.id DESC"
     with get_connection() as conn:
-        return [dict(row) for row in conn.execute(query).fetchall()]
+        return [dict(row) for row in conn.execute(query, params).fetchall()]
 
 
 def _archive_conflicts_for_edit(
@@ -1183,6 +1437,8 @@ def edit_pending_entry(
     detach_source: bool = False,
     *,
     actor_role: UserRole | str | None = None,
+    principal: AuthenticatedPrincipal | None = None,
+    brand_id: int | None = None,
 ) -> None:
     if not content.strip():
         raise ValueError("Knowledge content cannot be empty.")
@@ -1192,7 +1448,20 @@ def edit_pending_entry(
         ).fetchone()
         if row is None or row["status"] not in {"PENDING_APPROVAL", "NEEDS_CLARIFICATION", "UNRESOLVED"}:
             raise ValueError("Only pending proposals can be edited. Create a new proposal to change approved knowledge.")
-        _require_knowledge_role(row["category"], actor_role, "edit")
+        if principal is not None:
+            authenticated_actor = _require_entry_brand(
+                conn, principal, brand_id, entry_id, row["category"],
+                "edit a knowledge proposal",
+            )
+            actor = authenticated_actor.username
+            if product_id is not None:
+                require_record_brand(conn, authenticated_actor, brand_id, "products", product_id)
+            if source_document_id is not None:
+                require_record_brand(
+                    conn, authenticated_actor, brand_id, "knowledge_documents", source_document_id
+                )
+        else:
+            _require_knowledge_role(row["category"], actor_role, "edit")
         if detach_source and source_document_id is not None:
             raise ValueError("Choose either a source document or manual entry for the new version.")
         next_document_id = (
@@ -1286,6 +1555,11 @@ def edit_pending_entry(
             "INSERT INTO knowledge_decisions (entry_id, decision, actor, note) VALUES (?, 'EDITED', ?, ?)",
             (entry_id, actor, f"Saved version {version}"),
         )
+        _audit_knowledge_change(
+            conn, principal, action="KNOWLEDGE_PROPOSAL_EDITED",
+            object_type="knowledge_entry", object_id=entry_id, brand_id=brand_id,
+            details={"version": version},
+        )
         if row["category"] in _RULE_CATEGORIES:
             readiness_version = conn.execute(
                 "SELECT COALESCE(MAX(version_number), 0) + 1 AS next "
@@ -1322,13 +1596,16 @@ def resolve_knowledge_conflict(
     note: str = "",
     *,
     actor_role: UserRole | str | None = None,
+    principal: AuthenticatedPrincipal | None = None,
+    brand_id: int | None = None,
 ) -> None:
     if resolution not in {"KEEP_BOTH", "FIRST", "SECOND", "DISMISSED"}:
         raise ValueError("Choose a valid conflict resolution.")
     with get_connection() as conn:
         conflict = conn.execute(
             """
-            SELECT a.category AS first_category, b.category AS second_category
+            SELECT a.id AS first_id, a.category AS first_category,
+                   b.id AS second_id, b.category AS second_category
             FROM knowledge_conflicts c
             JOIN knowledge_entries a ON a.id = c.first_entry_id
             JOIN knowledge_entries b ON b.id = c.second_entry_id
@@ -1338,6 +1615,21 @@ def resolve_knowledge_conflict(
         ).fetchone()
         if conflict is None:
             raise ValueError("Conflict does not exist or has already been resolved.")
+        if principal is not None:
+            if brand_id is None:
+                raise ValueError("A brand is required to resolve a knowledge conflict.")
+            authenticated_actor = require_principal(
+                principal, action="resolve knowledge conflicts"
+            )
+            require_record_brand(
+                conn, authenticated_actor, brand_id, "knowledge_entries",
+                conflict["first_id"],
+            )
+            require_record_brand(
+                conn, authenticated_actor, brand_id, "knowledge_entries",
+                conflict["second_id"],
+            )
+            actor = authenticated_actor.username
         categories = {conflict["first_category"], conflict["second_category"]}
         needed_role = (
             "fact owner"
@@ -1347,9 +1639,15 @@ def resolve_knowledge_conflict(
         allowed_roles = {needed_role}
         if needed_role == "reviewer":
             allowed_roles.add("brand manager")
-        role_value = actor_role.value if isinstance(actor_role, UserRole) else str(actor_role or "")
-        if role_value.strip().casefold() not in allowed_roles:
-            raise PermissionError(f"This conflict requires the {needed_role.title()} demo role.")
+        if principal is not None:
+            needed = (BrandRole.OWNER, BrandRole.FACT_OWNER) if needed_role == "fact owner" else (
+                BrandRole.OWNER, BrandRole.REVIEWER,
+            )
+            require_brand_membership(principal, brand_id, needed)
+        else:
+            role_value = actor_role.value if isinstance(actor_role, UserRole) else str(actor_role or "")
+            if role_value.strip().casefold() not in allowed_roles:
+                raise PermissionError(f"This conflict requires the {needed_role.title()} demo role.")
         cursor = conn.execute(
             """
             UPDATE knowledge_conflicts SET status = ?, resolution_note = ?,
@@ -1360,6 +1658,11 @@ def resolve_knowledge_conflict(
         )
         if cursor.rowcount != 1:
             raise ValueError("Conflict does not exist or has already been resolved.")
+        _audit_knowledge_change(
+            conn, principal, action="KNOWLEDGE_CONFLICT_RESOLVED",
+            object_type="knowledge_conflict", object_id=conflict_id,
+            brand_id=brand_id, details={"resolution": resolution},
+        )
         conn.commit()
 
 
@@ -1370,6 +1673,8 @@ def decide_knowledge_entry(
     note: str = "",
     *,
     actor_role: UserRole | str | None = None,
+    principal: AuthenticatedPrincipal | None = None,
+    brand_id: int | None = None,
 ) -> dict:
     if decision not in {"APPROVE", "REJECT", "CLARIFY", "UNRESOLVED"}:
         raise ValueError("Choose approve, reject, request clarification, or mark unresolved.")
@@ -1388,7 +1693,14 @@ def decide_knowledge_entry(
         ).fetchone()
         if entry is None:
             raise ValueError(f"Knowledge proposal {entry_id} does not exist.")
-        _require_knowledge_role(entry["category"], actor_role, decision.lower())
+        if principal is not None:
+            authenticated_actor = _require_entry_brand(
+                conn, principal, brand_id, entry_id, entry["category"],
+                f"{decision.lower()} a knowledge proposal",
+            )
+            actor = authenticated_actor.username
+        else:
+            _require_knowledge_role(entry["category"], actor_role, decision.lower())
         if entry["status"] not in {"PENDING_APPROVAL", "NEEDS_CLARIFICATION", "UNRESOLVED"}:
             raise ValueError("Only pending proposals can receive a new decision.")
         if decision == "APPROVE":
@@ -1512,6 +1824,15 @@ def decide_knowledge_entry(
                     "UPDATE knowledge_entries SET linked_record_type = ?, linked_record_id = ? WHERE id = ?",
                     (linked["type"], linked["id"], entry_id),
                 )
+            _audit_knowledge_change(
+                conn, principal, action=f"KNOWLEDGE_{decision}",
+                object_type="knowledge_entry", object_id=entry_id,
+                brand_id=brand_id, details={
+                    "category": entry["category"],
+                    "linked_record_type": linked["type"] if linked else None,
+                    "linked_record_id": linked["id"] if linked else None,
+                },
+            )
             conn.commit()
         except Exception:
             conn.rollback()
@@ -1605,41 +1926,84 @@ def _activate_approved_entry(
     return None
 
 
-def get_setup_readiness() -> dict:
+def get_setup_readiness(
+    principal: AuthenticatedPrincipal | None = None,
+    brand_id: int | None = None,
+) -> dict:
+    _require_knowledge_access(principal, brand_id, "read workspace setup readiness")
     with get_connection() as conn:
-        profiles = conn.execute("SELECT COUNT(*) AS n FROM brand_profiles").fetchone()["n"]
+        scope_brand = None
+        profile_brand = None
+        if principal is not None:
+            if brand_id is None:
+                raise ValueError("A brand is required for authenticated setup readiness.")
+            membership = require_brand_membership(principal, brand_id)
+            scope_brand, profile_brand = brand_id, membership["name"]
+        profiles = conn.execute(
+            "SELECT COUNT(*) AS n FROM brand_profiles" +
+            (" WHERE brand = ?" if profile_brand is not None else ""),
+            (profile_brand,) if profile_brand is not None else (),
+        ).fetchone()["n"]
         approved_entries = conn.execute(
-            "SELECT category, COUNT(*) AS n FROM knowledge_entries WHERE status = 'APPROVED' GROUP BY category"
+            "SELECT category, COUNT(*) AS n FROM knowledge_entries WHERE status = 'APPROVED'" +
+            (" AND brand_id = ?" if scope_brand is not None else "") + " GROUP BY category",
+            (scope_brand,) if scope_brand is not None else (),
         ).fetchall()
         category_counts = {row["category"]: row["n"] for row in approved_entries}
-        rules = conn.execute("SELECT COUNT(*) AS n FROM guidelines WHERE is_active = 1").fetchone()["n"]
+        rules = conn.execute(
+            "SELECT COUNT(*) AS n FROM guidelines WHERE is_active = 1" +
+            (" AND brand_id = ?" if scope_brand is not None else ""),
+            (scope_brand,) if scope_brand is not None else (),
+        ).fetchone()["n"]
         facts = conn.execute(
-            "SELECT COUNT(*) AS n FROM fact_versions WHERE approval_status = 'APPROVED'"
+            "SELECT COUNT(*) AS n FROM fact_versions fv JOIN facts f ON f.id = fv.fact_id "
+            "JOIN products p ON p.id = f.product_id WHERE fv.approval_status = 'APPROVED'" +
+            (" AND p.brand_id = ?" if scope_brand is not None else ""),
+            (scope_brand,) if scope_brand is not None else (),
         ).fetchone()["n"]
         assets = conn.execute(
-            "SELECT COUNT(*) AS n FROM brand_assets WHERE owner_approved = 1 AND is_active = 1"
+            "SELECT COUNT(*) AS n FROM brand_assets WHERE owner_approved = 1 AND is_active = 1" +
+            (" AND brand_id = ?" if scope_brand is not None else ""),
+            (scope_brand,) if scope_brand is not None else (),
         ).fetchone()["n"]
         conflicts = conn.execute(
-            "SELECT COUNT(*) AS n FROM knowledge_conflicts WHERE status = 'UNRESOLVED'"
+            "SELECT COUNT(*) AS n FROM knowledge_conflicts c "
+            "JOIN knowledge_entries a ON a.id = c.first_entry_id "
+            "JOIN knowledge_entries b ON b.id = c.second_entry_id "
+            "WHERE c.status = 'UNRESOLVED'" +
+            (" AND a.brand_id = ? AND b.brand_id = ?" if scope_brand is not None else ""),
+            (scope_brand, scope_brand) if scope_brand is not None else (),
         ).fetchone()["n"]
         pending_entries = conn.execute(
             """
             SELECT COUNT(*) AS n FROM knowledge_entries
-            WHERE status IN ('PENDING_APPROVAL','NEEDS_CLARIFICATION','UNRESOLVED')
-            """
+            WHERE status IN ('PENDING_APPROVAL','NEEDS_CLARIFICATION','UNRESOLVED')""" +
+            (" AND brand_id = ?" if scope_brand is not None else ""),
+            (scope_brand,) if scope_brand is not None else (),
         ).fetchone()["n"]
         attention = conn.execute(
             """
             SELECT COUNT(*) AS n FROM knowledge_documents
-            WHERE extraction_status IN ('NEEDS_ATTENTION','FAILED')
-               OR ai_extraction_status IN ('FAILED','PARTIAL')
-            """
+            WHERE (extraction_status IN ('NEEDS_ATTENTION','FAILED')
+               OR ai_extraction_status IN ('FAILED','PARTIAL'))""" +
+            (" AND brand_id = ?" if scope_brand is not None else ""),
+            (scope_brand,) if scope_brand is not None else (),
         ).fetchone()["n"]
-        review_count = conn.execute("SELECT COUNT(*) AS n FROM drafts").fetchone()["n"]
+        review_count = conn.execute(
+            "SELECT COUNT(*) AS n FROM drafts" +
+            (" WHERE brand_id = ?" if scope_brand is not None else ""),
+            (scope_brand,) if scope_brand is not None else (),
+        ).fetchone()["n"]
         approval_count = conn.execute(
-            "SELECT COUNT(*) AS n FROM drafts WHERE status IN ('READY_FOR_REVIEW','APPROVED')"
+            "SELECT COUNT(*) AS n FROM drafts WHERE status IN ('READY_FOR_REVIEW','APPROVED')" +
+            (" AND brand_id = ?" if scope_brand is not None else ""),
+            (scope_brand,) if scope_brand is not None else (),
         ).fetchone()["n"]
-        products = conn.execute("SELECT COUNT(*) AS n FROM products").fetchone()["n"]
+        products = conn.execute(
+            "SELECT COUNT(*) AS n FROM products" +
+            (" WHERE brand_id = ?" if scope_brand is not None else ""),
+            (scope_brand,) if scope_brand is not None else (),
+        ).fetchone()["n"]
     return {
         "brand_identity": profiles > 0,
         "products": products,
@@ -1664,5 +2028,10 @@ def get_setup_readiness() -> dict:
     }
 
 
-def get_document_status(document_id: int) -> str:
-    return get_source_document(document_id)["extraction_status"]
+def get_document_status(
+    document_id: int,
+    *,
+    principal: AuthenticatedPrincipal | None = None,
+    brand_id: int | None = None,
+) -> str:
+    return get_source_document(document_id, principal, brand_id)["extraction_status"]

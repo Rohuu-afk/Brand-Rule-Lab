@@ -10,6 +10,7 @@ Supported formats
 - .txt   — plain UTF-8 / latin-1 / cp1252 read
 - .xlsx — openpyxl; preserves worksheet numbers and names
 - .png / .jpg / .jpeg — Tesseract OCR via pytesseract + Pillow
+- .mp4 / .mov / .webm — bounded local keyframe sampling and Tesseract OCR
 - Pasted text — returned as-is
 
 Security notes
@@ -30,6 +31,8 @@ import re
 import zipfile
 import csv
 import shutil
+import subprocess
+import tempfile
 from pathlib import Path
 
 MAX_BYTES = int(os.getenv("MAX_UPLOAD_MB", "10")) * 1024 * 1024
@@ -41,9 +44,15 @@ MAX_PDF_PAGES = int(os.getenv("MAX_PDF_PAGES", "200"))
 MAX_PDF_RENDER_PIXELS = int(os.getenv("MAX_PDF_RENDER_PIXELS", "200000000"))
 PDF_RENDER_SCALE = float(os.getenv("PDF_RENDER_SCALE", "2.0"))
 MAX_IMAGE_PIXELS = int(os.getenv("MAX_IMAGE_PIXELS", "40000000"))
+MAX_OCR_BOXES_PER_LINE = 100
+MAX_VIDEO_BYTES = int(os.getenv("MAX_VIDEO_MB", "100")) * 1024 * 1024
+MAX_VIDEO_DURATION_SECONDS = int(os.getenv("MAX_VIDEO_DURATION_SECONDS", "120"))
+MAX_VIDEO_KEYFRAMES = int(os.getenv("MAX_VIDEO_KEYFRAMES", "12"))
+MAX_VIDEO_FRAME_DIMENSION = int(os.getenv("MAX_VIDEO_FRAME_DIMENSION", "1280"))
 
 ALLOWED_EXTENSIONS = {
     ".pdf", ".docx", ".txt", ".csv", ".xlsx", ".png", ".jpg", ".jpeg",
+    ".mp4", ".mov", ".webm",
 }
 
 # Magic byte signatures for type validation
@@ -53,6 +62,8 @@ _MAGIC: dict[bytes, str] = {
     b"\x89PNG": "png",
     b"\xff\xd8\xff": "jpg",
 }
+
+_VIDEO_EXTENSIONS = {".mp4", ".mov", ".webm"}
 
 
 class ParseError(ValueError):
@@ -156,14 +167,17 @@ def parse_file(filename: str, data: bytes) -> dict:
 
     Raises ParseError on validation or parsing failure.
     """
-    _check_size(data)
-
     ext = Path(filename).suffix.lower()
     if ext not in ALLOWED_EXTENSIONS:
         raise ParseError(
             f"File type '{ext}' is not allowed. "
             f"Accepted: {', '.join(sorted(ALLOWED_EXTENSIONS))}"
         )
+
+    if ext in _VIDEO_EXTENSIONS:
+        return _parse_video(data, ext, filename=filename)
+
+    _check_size(data)
 
     # For non-txt formats, check magic bytes and the DOCX container structure.
     if ext not in {".txt", ".csv"}:
@@ -194,6 +208,364 @@ def parse_file(filename: str, data: bytes) -> dict:
     else:  # png / jpg / jpeg
         validate_image_dimensions(data)
         return _parse_image(data)
+
+
+def _resolve_tesseract_command() -> str:
+    configured_command = os.getenv("TESSERACT_CMD", "").strip()
+    default_command = Path(r"C:\Program Files\Tesseract-OCR\tesseract.exe")
+    command = configured_command or (
+        str(default_command) if default_command.is_file() else shutil.which("tesseract")
+    )
+    if not command or not Path(command).expanduser().is_file():
+        target = configured_command or "the default Windows installation"
+        raise ParseError(
+            f"Tesseract executable was not found at {target}. Set TESSERACT_CMD "
+            "to the installed tesseract.exe path."
+        )
+    return str(Path(command).expanduser().resolve())
+
+
+def _configure_tesseract(pytesseract, command: str | None = None) -> str:
+    command = command or _resolve_tesseract_command()
+    tessdata_setting = os.getenv("TESSDATA_PREFIX", "").strip()
+    if tessdata_setting:
+        tessdata_candidates = [Path(tessdata_setting).expanduser()]
+    else:
+        tessdata_candidates = [Path(command).parent / "tessdata"]
+        if os.name == "posix":
+            tessdata_candidates.extend(
+                [
+                    Path("/usr/share/tessdata"),
+                    Path("/usr/local/share/tessdata"),
+                    *Path("/usr/share/tesseract-ocr").glob("*/tessdata"),
+                ]
+            )
+
+    tessdata = None
+    for candidate in tessdata_candidates:
+        if (candidate / "eng.traineddata").is_file():
+            tessdata = candidate
+            break
+        nested_candidate = candidate / "tessdata"
+        if (nested_candidate / "eng.traineddata").is_file():
+            tessdata = nested_candidate
+            break
+
+    if tessdata is None:
+        searched = ", ".join(str(candidate) for candidate in tessdata_candidates)
+        raise ParseError(
+            f"English Tesseract language data (eng.traineddata) was not found in "
+            f"{searched}. Set TESSDATA_PREFIX to the directory containing it."
+        )
+
+    pytesseract.pytesseract.tesseract_cmd = command
+    os.environ["TESSDATA_PREFIX"] = str(tessdata.resolve())
+    return ""
+
+
+def ocr_pil_image(
+    image: Any,
+    tesseract_config: str | None = None,
+    *,
+    max_words: int | None = None,
+    max_text_chars: int | None = None,
+    max_boxes_per_line: int = MAX_OCR_BOXES_PER_LINE,
+) -> list[dict]:
+    """Return OCR lines with confidence, normalized boxes, and completeness metadata."""
+    import pytesseract
+
+    config = tesseract_config
+    if config is None:
+        try:
+            command = _resolve_tesseract_command()
+            config = _configure_tesseract(pytesseract, command)
+        except Exception:
+            config = ""
+
+    image_width, image_height = image.size
+    data_result = pytesseract.image_to_data(
+        image,
+        lang="eng",
+        output_type=pytesseract.Output.DICT,
+        config=f"{config} --psm 6" if config else "--psm 6",
+    )
+    words = data_result.get("text", [])
+    groups: dict[tuple[int, int, int], dict] = {}
+    word_count = 0
+    text_char_count = 0
+    output_complete = True
+
+    def _data_value(field: str, index: int, default: Any = 0) -> Any:
+        try:
+            return data_result.get(field, [default] * len(words))[index]
+        except (IndexError, TypeError):
+            return default
+
+    for index, word in enumerate(words):
+        if not isinstance(word, str) or not word.strip():
+            continue
+        word = word.strip()
+        if max_words is not None and word_count >= max_words:
+            output_complete = False
+            break
+        additional_chars = len(word) + (1 if word_count else 0)
+        if max_text_chars is not None and text_char_count + additional_chars > max_text_chars:
+            output_complete = False
+            break
+        word_count += 1
+        text_char_count += additional_chars
+        key = tuple(
+            int(_data_value(field, index))
+            for field in ("block_num", "par_num", "line_num")
+        )
+        confidence_value = _data_value("conf", index, "-1")
+        try:
+            confidence = float(confidence_value)
+        except (TypeError, ValueError):
+            confidence = -1
+
+        group = groups.setdefault(
+            key,
+            {
+                "words": [],
+                "confidences": [],
+                "text_boxes": [],
+                "text_boxes_complete": True,
+            },
+        )
+        group["words"].append(word)
+        if confidence >= 0:
+            group["confidences"].append(confidence)
+
+        def _value(field: str) -> int:
+            try:
+                return int(_data_value(field, index))
+            except (TypeError, ValueError):
+                return 0
+
+        left, top = _value("left"), _value("top")
+        right = min(image_width, left + max(0, _value("width")))
+        bottom = min(image_height, top + max(0, _value("height")))
+        left, top = max(0, left), max(0, top)
+        if image_width > 0 and image_height > 0 and right > left and bottom > top:
+            if len(group["text_boxes"]) < max_boxes_per_line:
+                group["text_boxes"].append(
+                    {
+                        "x": round(left / image_width, 6),
+                        "y": round(top / image_height, 6),
+                        "width": round((right - left) / image_width, 6),
+                        "height": round((bottom - top) / image_height, 6),
+                    }
+                )
+            else:
+                group["text_boxes_complete"] = False
+
+    lines: list[dict] = []
+    for group in groups.values():
+        line_confidences = group["confidences"]
+        lines.append(
+            {
+                "text": " ".join(group["words"]),
+                "confidence": (
+                    sum(line_confidences) / (100 * len(line_confidences))
+                    if line_confidences else None
+                ),
+                "confidence_count": len(line_confidences),
+                "text_boxes": group["text_boxes"],
+                "text_boxes_complete": group["text_boxes_complete"],
+            }
+        )
+    if lines:
+        for line in lines:
+            line["complete"] = output_complete
+    elif not output_complete:
+        lines.append(
+            {
+                "record_type": "status",
+                "status": "INCOMPLETE",
+                "text": "",
+                "confidence": None,
+                "confidence_count": 0,
+                "text_boxes": [],
+                "text_boxes_complete": True,
+                "complete": False,
+            }
+        )
+    return lines
+
+
+def _parse_video(data: bytes, extension: str, filename: str = "upload.mp4") -> dict:
+    """Sample bounded video keyframes and OCR visible text locally."""
+    if len(data) > MAX_VIDEO_BYTES:
+        raise ResourceLimitError(
+            f"Video exceeds the configured {MAX_VIDEO_BYTES / (1024 * 1024):g} MB limit."
+        )
+    if extension == ".webm":
+        valid_magic = data.startswith(b"\x1aE\xdf\xa3")
+    else:
+        valid_magic = len(data) >= 12 and data[4:8] == b"ftyp"
+    if not valid_magic:
+        raise ParseError("Video content does not match its extension; upload rejected.")
+
+    # Try modular PyAV video parser & OCR first if available
+    try:
+        from services.video_ocr import parse_video_evidence
+        res = parse_video_evidence(filename or f"upload{extension}", data)
+        return {
+            "text": res["text"],
+            "page_map": res["page_map"],
+            "source_type": "video",
+            "word_count": res["word_count"],
+            "page_records": [],
+            "video_metadata": res.get("media_evidence", {}),
+            "media_evidence": res.get("media_evidence", {}),
+            "extraction_status": "COMPLETE" if res.get("ocr_complete") else "INCOMPLETE",
+            "sampling_complete": res.get("sampling_complete", False),
+            "sampling_warnings": res.get("sampling_warnings", []),
+            "ocr_warnings": res.get("ocr_warnings", []),
+            "unobserved_pages": [],
+        }
+    except Exception:
+        pass
+
+    try:
+        import imageio_ffmpeg
+    except ImportError as exc:
+        raise ParseError(
+            "Video review needs the av or imageio-ffmpeg package. Install the project requirements and retry."
+        ) from exc
+
+    with tempfile.TemporaryDirectory(prefix="brl_video_") as temp_dir:
+        root = Path(temp_dir)
+        input_path = root / ("upload" + extension)
+        input_path.write_bytes(data)
+        reader = None
+        try:
+            reader = imageio_ffmpeg.read_frames(str(input_path), pix_fmt="rgb24")
+            metadata = next(reader)
+        except Exception as exc:
+            raise ParseError(
+                f"Video could not be inspected safely ({type(exc).__name__})."
+            ) from exc
+        finally:
+            if reader is not None:
+                try:
+                    reader.close()
+                except Exception:
+                    pass
+
+        try:
+            width, height = (int(v) for v in metadata["source_size"])
+            duration = float(metadata["duration"])
+        except (KeyError, TypeError, ValueError) as exc:
+            raise ParseError("Video metadata is incomplete; no frames were checked.") from exc
+        if width <= 0 or height <= 0 or width * height > MAX_IMAGE_PIXELS:
+            raise ResourceLimitError(
+                f"Video frame dimensions ({width} x {height}) exceed the configured pixel limit."
+            )
+        if duration <= 0:
+            raise ParseError("Video duration could not be determined; no frames were checked.")
+        if duration > MAX_VIDEO_DURATION_SECONDS:
+            raise ResourceLimitError(
+                f"Video is {duration:.1f} seconds long; the limit is "
+                f"{MAX_VIDEO_DURATION_SECONDS} seconds."
+            )
+
+        sample_count = min(MAX_VIDEO_KEYFRAMES, max(1, int(duration) + 1))
+        interval = max(duration / max(sample_count, 1), 0.5)
+        frame_pattern = str(root / "frame_%03d.png")
+        scale = MAX_VIDEO_FRAME_DIMENSION
+        filters = f"fps=1/{interval:.4f},scale='min({scale},iw)':-2"
+        command = [
+            imageio_ffmpeg.get_ffmpeg_exe(), "-hide_banner", "-loglevel", "error",
+            "-i", str(input_path), "-vf", filters,
+            "-frames:v", str(MAX_VIDEO_KEYFRAMES), "-f", "image2", frame_pattern,
+        ]
+        try:
+            completed = subprocess.run(
+                command, capture_output=True, timeout=35, check=False,
+            )
+        except subprocess.TimeoutExpired as exc:
+            raise ResourceLimitError("Video keyframe extraction exceeded 35 seconds.") from exc
+        except OSError as exc:
+            raise ParseError("Video decoder could not be started safely.") from exc
+        if completed.returncode != 0:
+            raise ParseError("Video decoder could not extract readable keyframes.")
+
+        frames = sorted(root.glob("frame_*.png"))
+        if not frames:
+            raise ParseError("No video keyframes could be extracted; no review was created.")
+        records: list[dict] = []
+        full_text_parts: list[str] = []
+        page_map: dict[int, int] = {}
+        offset = 0
+        for frame_number, frame_path in enumerate(frames, start=1):
+            timestamp = min((frame_number - 1) * interval, duration)
+            timestamp_label = f"{int(timestamp // 60):02d}:{timestamp % 60:05.2f}"
+            warnings: list[str] = []
+            text = ""
+            confidence: float | None = None
+            try:
+                from PIL import Image
+                import pytesseract
+
+                tesseract_config = _configure_tesseract(pytesseract)
+                with Image.open(frame_path) as image:
+                    image.load()
+                    data_result = pytesseract.image_to_data(
+                        image, lang="eng", config=tesseract_config,
+                        output_type=pytesseract.Output.DICT, timeout=5,
+                    )
+                    text = " ".join(
+                        token.strip() for token in data_result.get("text", [])
+                        if token.strip()
+                    )
+                    scores = [
+                        float(value) for value in data_result.get("conf", [])
+                        if str(value).strip() not in {"", "-1"} and float(value) >= 0
+                    ]
+                    confidence = sum(scores) / len(scores) if scores else None
+            except Exception as exc:
+                warnings.append(f"Frame OCR unavailable ({type(exc).__name__}); verify this frame manually.")
+
+            if not text:
+                warnings.append("No readable text was recovered from this sampled frame.")
+            record = {
+                "page_number": frame_number,
+                "frame_number": frame_number,
+                "timestamp_seconds": round(timestamp, 2),
+                "timestamp": timestamp_label,
+                "text": text,
+                "method": "video_keyframe_ocr",
+                "quality": (confidence or 0.0) / 100,
+                "confidence": confidence,
+                "warnings": warnings,
+            }
+            records.append(record)
+            if text:
+                page_map[offset] = frame_number
+                full_text_parts.append(text)
+                offset += len(text) + 1
+
+    full_text = "\n".join(full_text_parts)
+    return {
+        "text": full_text,
+        "page_map": page_map,
+        "source_type": "video",
+        "word_count": len(full_text.split()),
+        "page_records": records,
+        "video_metadata": {
+            "duration_seconds": round(duration, 2),
+            "width": width,
+            "height": height,
+            "sampled_keyframes": len(records),
+            "maximum_keyframes": MAX_VIDEO_KEYFRAMES,
+            "sampling_interval_seconds": round(interval, 2),
+            "coverage_note": "Only sampled frames were checked; unsampled moments are not observed.",
+        },
+        "extraction_status": _aggregate_status(records),
+        "unobserved_pages": [r["frame_number"] for r in records if not r["text"].strip()],
+    }
 
 
 def parse_for_onboarding(filename: str, data: bytes, visual_asset: bool = False) -> dict:
@@ -612,6 +984,18 @@ def _is_tesseract_unavailable(error: Exception) -> bool:
         isinstance(error, (ImportError, OSError, ParseError))
         or type(error).__name__ == "TesseractNotFoundError"
     )
+
+
+def _aggregate_ocr_confidence(lines: list[dict]) -> float:
+    confidence_total = 0.0
+    confidence_count = 0
+    for line in lines:
+        count = line.get("confidence_count", 0)
+        confidence = line.get("confidence")
+        if isinstance(count, int) and count > 0 and isinstance(confidence, (int, float)):
+            confidence_total += confidence * count
+            confidence_count += count
+    return round(confidence_total / confidence_count, 2) if confidence_count else 0.0
 
 
 def _deskew_image(image):

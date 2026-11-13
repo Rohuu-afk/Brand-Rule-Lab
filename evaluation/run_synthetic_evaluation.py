@@ -5,6 +5,7 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import secrets
 import sys
 import tempfile
 import time
@@ -27,12 +28,29 @@ def main() -> None:
         from db.connection import apply_schema, get_connection
         from db.seed import seed
         from engines.rule_engine import run_rule
-        from models.enums import FindingResult
+        from models.enums import FindingResult, UserRole
         from services.asset_service import decide_asset, register_image_asset
+        from services.auth_service import create_user, login, resolve_session
+        from services.brand_service import create_brand
         from services.review_service import _deterministic_fact_relationship
 
         apply_schema()
         seed()
+        evaluation_password = secrets.token_urlsafe(32)
+        create_user(
+            "synthetic-evaluation-owner",
+            evaluation_password,
+            UserRole.REVIEWER,
+            email="synthetic-evaluation-owner@example.invalid",
+            email_verified=True,
+        )
+        principal = resolve_session(
+            login("synthetic-evaluation-owner", evaluation_password)
+        )
+        brand = create_brand(principal, "Synthetic Evaluation Workspace")
+        with get_connection() as conn:
+            conn.execute("UPDATE products SET brand_id = ? WHERE id = 1", (brand["id"],))
+            conn.commit()
 
         matching_passes = 0
         for index in range(60):
@@ -71,8 +89,15 @@ def main() -> None:
                 f"evaluation-{index + 1}.png",
                 content,
                 product_id=1,
+                principal=principal,
+                brand_id=brand["id"],
             )
-            decide_asset(asset_id, approved=True, actor_role="Fact Owner")
+            decide_asset(
+                asset_id,
+                approved=True,
+                principal=principal,
+                brand_id=brand["id"],
+            )
             stored_asset_ids.append(asset_id)
         asset_seconds = time.perf_counter() - started
 

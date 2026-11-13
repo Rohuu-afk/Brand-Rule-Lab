@@ -1,8 +1,7 @@
 """
 ui/navigation.py
 ----------------
-Sidebar navigation and role selector.
-No authentication — this is a demo app.
+Authenticated sidebar navigation.
 """
 
 from __future__ import annotations
@@ -12,7 +11,9 @@ from pathlib import Path
 
 import streamlit as st
 
-from models.enums import UserRole
+from models.enums import BrandRole, UserRole
+from services.auth_service import AuthenticatedPrincipal
+from services.brand_service import list_brands, require_brand_membership
 
 
 _WORDMARK_LOGO_PATH = Path(__file__).parent / "assets" / "brand-rule-lab-logo.png"
@@ -20,19 +21,31 @@ _WORDMARK_LOGO_PATH = Path(__file__).parent / "assets" / "brand-rule-lab-logo.pn
 
 PAGE_GROUPS = {
     UserRole.CREATOR: {
-        "Workspace": ["Overview", "Brand Knowledge", "Brand Guidelines", "Products & Facts", "Brand Assets"],
-        "Content Review": ["New Review", "Review Results", "Review History"],
-        "Governance": ["Claim Ledger", "Rule Tests", "Insights"],
+        "Workspace": ["Overview"],
+        "Reviews": ["New Review", "Review Results", "Review History"],
+        "Records": ["Claim Ledger"],
     },
     UserRole.REVIEWER: {
-        "Workspace": ["Overview", "Brand Knowledge", "Brand Guidelines", "Products & Facts", "Brand Assets"],
-        "Content Review": ["Review Results", "Review History"],
-        "Governance": ["Claim Ledger", "Draft Approvals", "Rule Readiness", "Rule Tests", "Insights"],
+        "Workspace": ["Overview"],
+        "Reviews": ["Review Results", "Review History", "Draft Approvals"],
+        "Governance": [
+            "Brand Knowledge", "Brand Guidelines", "Rule Readiness",
+            "Claim Ledger", "Audit & Exports",
+        ],
     },
     UserRole.FACT_OWNER: {
-        "Workspace": ["Overview", "Brand Knowledge", "Brand Guidelines", "Products & Facts", "Brand Assets"],
-        "Content Review": ["Review History"],
-        "Governance": ["Claim Ledger", "Fact Approvals", "Rule Tests", "Insights"],
+        "Workspace": ["Overview"],
+        "Evidence": ["Brand Knowledge", "Products & Facts", "Brand Assets", "Fact Approvals"],
+        "Records": ["Claim Ledger", "Audit & Exports"],
+    },
+    BrandRole.OWNER: {
+        "Workspace": ["Overview"],
+        "Reviews": ["New Review", "Review Results", "Review History", "Draft Approvals"],
+        "Brand governance": [
+            "Brand Knowledge", "Brand Guidelines", "Products & Facts", "Brand Assets",
+            "Fact Approvals", "Claim Ledger", "Rule Readiness", "Insights",
+        ],
+        "Administration": ["Team & Permissions", "CMS Draft Integrations", "Audit & Exports"],
     },
 }
 
@@ -58,6 +71,9 @@ PAGE_MODULE = {
     "Rule Tests": "ui.pages.rule_tests",
     "Fact Approvals": "ui.pages.fact_approvals",
     "Insights": "ui.pages.insights",
+    "Audit & Exports": "ui.pages.audit",
+    "CMS Draft Integrations": "ui.pages.integrations",
+    "Team & Permissions": "ui.pages.team",
     # Backward compatibility mappings
     "📜 Claim Ledger":             "ui.pages.approvals",
     "📜 Claim Ledger (Approvals)": "ui.pages.approvals",
@@ -71,10 +87,10 @@ def _select_page(page_label: str) -> None:
     st.session_state["sidebar_page"] = page_label
 
 
-def render_sidebar() -> tuple[UserRole, str]:
+def render_sidebar(principal: AuthenticatedPrincipal) -> tuple[AuthenticatedPrincipal, str]:
     """
     Render sidebar navigation.
-    Returns (selected_role, selected_page_label).
+    Returns (authenticated principal, selected page label).
     """
     with st.sidebar:
         logo_data = base64.b64encode(_WORDMARK_LOGO_PATH.read_bytes()).decode("ascii")
@@ -88,28 +104,42 @@ def render_sidebar() -> tuple[UserRole, str]:
             unsafe_allow_html=True,
         )
 
-        st.markdown("#### Workspace role")
-        st.caption("Simulated role control; this is not sign-in or authentication.")
-        st.toggle("Dark mode", key="brl_dark_mode", value=False)
-        role_options = [r.value for r in UserRole]
-        selected_role_str = st.selectbox(
-            "Select your role",
-            role_options,
-            index=0,
-            key="sidebar_role",
-            help="No sign-in required — this is a demo. Each role has specific permissions.",
-        )
-        selected_role = UserRole(selected_role_str)
+        st.toggle("Dark mode", key="brl_dark_mode", value=True)
+        brands = list_brands(principal)
+        if not brands:
+            return principal, "Overview"
+        active_id = st.session_state.get("active_brand_id")
+        if active_id not in {brand["id"] for brand in brands}:
+            active_id = brands[0]["id"]
+            st.session_state["active_brand_id"] = active_id
+        brand_labels = {f'{brand["name"]} · {brand["role"]}': brand["id"] for brand in brands}
+        selected_label = next(label for label, value in brand_labels.items() if value == active_id)
+        chosen_label = st.selectbox("Brand workspace", list(brand_labels), index=list(brand_labels).index(selected_label))
+        active_id = brand_labels[chosen_label]
+        st.session_state["active_brand_id"] = active_id
+        membership = require_brand_membership(principal, active_id)
+        selected_role = membership["role"]
+        st.markdown(f"**Signed in:** `{principal.username}`")
+        st.caption(f"Role: {selected_role}")
+        if st.button("Log out", key="logout"):
+            from services.auth_service import logout
+
+            logout(st.session_state.get("brl_session_token", ""))
+            st.session_state.pop("brl_session_token", None)
+            if st.session_state.pop("brl_oidc_authenticated", False):
+                st.logout()
+            st.rerun()
 
         role_desc = {
-            UserRole.CREATOR: "Creator · Draft checks and claim submission",
-            UserRole.REVIEWER: "Reviewer · Compliance decisions and approvals",
-            UserRole.FACT_OWNER: "Fact Owner · Evidence and version governance",
+            UserRole.CREATOR.value: "Draft reviews and claim submission",
+            UserRole.REVIEWER.value: "Compliance decisions and approvals",
+            UserRole.FACT_OWNER.value: "Evidence and version governance",
+            BrandRole.OWNER.value: "Workspace and team administration",
         }.get(selected_role, "")
         if role_desc:
             st.caption(role_desc)
 
-        groups = PAGE_GROUPS[selected_role]
+        groups = PAGE_GROUPS[BrandRole.OWNER if selected_role == BrandRole.OWNER.value else UserRole(selected_role)]
         available_pages = [page for options in groups.values() for page in options]
         selected_page = st.session_state.get("sidebar_page", "Overview")
         if selected_page not in available_pages:
@@ -133,4 +163,4 @@ def render_sidebar() -> tuple[UserRole, str]:
             unsafe_allow_html=True,
         )
 
-    return selected_role, selected_page
+    return principal, selected_page

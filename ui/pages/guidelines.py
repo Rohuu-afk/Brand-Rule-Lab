@@ -7,7 +7,7 @@ import json
 import streamlit as st
 
 from engines.rule_engine import run_self_tests
-from models.enums import RuleType, UserRole
+from models.enums import BrandRole, RuleType, UserRole
 from services.document_parser import MAX_BYTES, ParseError, parse_file
 from services.guideline_service import (
     approve_rule,
@@ -28,30 +28,46 @@ from services.guideline_service import (
     update_guideline,
     update_rule_proposal,
 )
+from services.auth_service import AuthenticatedPrincipal
+from services.brand_service import require_brand_membership
 from ui.presentation import humanize
-from ui.components import page_header
+from ui.components import page_header, section_heading
 from ui.styles import demo_banner, inject_styles
 
 
-def _management_access(role: UserRole | None) -> bool:
-    return role in (UserRole.REVIEWER, UserRole.FACT_OWNER)
+def _management_access(role: UserRole | str | None) -> bool:
+    value = role.value if isinstance(role, UserRole) else role
+    return value in {
+        BrandRole.OWNER.value, BrandRole.REVIEWER.value, BrandRole.FACT_OWNER.value,
+        UserRole.REVIEWER.value, UserRole.FACT_OWNER.value,
+    }
 
 
-def render(role: UserRole | None = None):
+def render(
+    role: UserRole | None = None,
+    principal: AuthenticatedPrincipal | None = None,
+):
     inject_styles()
-    page_header("Workspace", "Brand Guidelines, Rules & Campaign Briefs")
+    page_header("Workspace", "Brand Guidelines & Rules")
     demo_banner()
+    brand_id = None
+    if principal is not None:
+        brand_id = st.session_state.get("active_brand_id")
+        membership = require_brand_membership(principal, brand_id)
+        role = membership["role"]
     can_manage = _management_access(role)
     if not can_manage:
         st.info("Guideline and rule decisions are available to Reviewer/Fact Owner demo roles.")
 
-    products = get_all_products()
+    products = get_all_products(principal=principal, brand_id=brand_id)
     product_options = {"All Products": None} | {p["name"]: p["id"] for p in products}
     tabs = st.tabs(["Guidelines", "Rules & Terminology", "Campaign Briefs"])
 
     with tabs[0]:
         selected_name = st.selectbox("Filter guidelines by product", list(product_options), key="guideline_filter")
-        for guideline in get_all_guidelines(product_id=product_options[selected_name]):
+        for guideline in get_all_guidelines(
+            product_id=product_options[selected_name], principal=principal, brand_id=brand_id
+        ):
             with st.expander(f"{guideline['title']} — {guideline.get('source_ref') or 'No source reference'}"):
                 st.write(guideline["content"])
                 st.caption(
@@ -83,18 +99,21 @@ def render(role: UserRole | None = None):
                             guideline["id"], edit_title, edit_content, edit_source,
                             edit_version, product_options[edit_product],
                             guideline.get("source_type") or "manual", edit_section,
+                            principal=principal, brand_id=brand_id,
                         )
                         st.success("Guideline updated.")
                         st.rerun()
                     if guideline["is_active"] and st.button(
                         "Deactivate guideline", key=f"deactivate_guideline_{guideline['id']}"
                     ):
-                        set_guideline_active(guideline["id"], False)
+                        set_guideline_active(
+                            guideline["id"], False, principal=principal, brand_id=brand_id
+                        )
                         st.success("Guideline deactivated.")
                         st.rerun()
 
         if can_manage:
-            st.subheader("Define or import a guideline")
+            section_heading("Define or import a guideline")
             with st.form("create_guideline_form"):
                 title = st.text_input("Guideline title")
                 product_name = st.selectbox("Product scope", list(product_options), key="guideline_new_product")
@@ -121,6 +140,7 @@ def render(role: UserRole | None = None):
                     create_guideline(
                         title, content, source_ref, version,
                         product_options[product_name], source_type, section_ref,
+                        principal=principal, brand_id=brand_id,
                     )
                 except (ParseError, ValueError) as exc:
                     st.error(str(exc))
@@ -130,8 +150,12 @@ def render(role: UserRole | None = None):
 
     with tabs[1]:
         selected_name = st.selectbox("Filter rules by product", list(product_options), key="rule_filter")
-        rules = get_all_rules(product_id=product_options[selected_name])
-        guidelines = get_all_guidelines(product_id=product_options[selected_name])
+        rules = get_all_rules(
+            product_id=product_options[selected_name], principal=principal, brand_id=brand_id
+        )
+        guidelines = get_all_guidelines(
+            product_id=product_options[selected_name], principal=principal, brand_id=brand_id
+        )
         guideline_options = {"No linked guideline": None} | {
             f"{item['title']} (#{item['id']})": item["id"] for item in guidelines
         }
@@ -144,7 +168,9 @@ def render(role: UserRole | None = None):
                 st.caption(f"Severity: {rule['severity']} · Guideline: {rule.get('guideline_title') or 'None'}")
                 with st.expander("Rule specification and test cases"):
                     st.code(json.dumps(json.loads(rule["parameters"]), indent=2), language="json")
-                    test_results = get_rule_test_results(rule["id"])
+                    test_results = get_rule_test_results(
+                        rule["id"], principal=principal, brand_id=brand_id
+                    )
                     if test_results:
                         for item in test_results:
                             st.write(
@@ -215,7 +241,7 @@ def render(role: UserRole | None = None):
                                 edit_parameters, edit_positive.splitlines(), edit_negative.splitlines(),
                                 product_options[edit_product], guideline_options[edit_guideline],
                                 edit_scope, edit_severity,
-                                actor_role=role,
+                                principal=principal, brand_id=brand_id,
                             )
                         except (ValueError, PermissionError) as exc:
                             st.error(str(exc))
@@ -225,7 +251,7 @@ def render(role: UserRole | None = None):
                     left, right = st.columns(2)
                     if left.button("Approve and activate", key=f"activate_rule_{rule['id']}"):
                         try:
-                            approve_rule(rule["id"], actor_role=role)
+                            approve_rule(rule["id"], principal=principal, brand_id=brand_id)
                         except (ValueError, PermissionError) as exc:
                             st.error(str(exc))
                         else:
@@ -233,7 +259,7 @@ def render(role: UserRole | None = None):
                             st.rerun()
                     if right.button("Reject proposal", key=f"reject_rule_{rule['id']}"):
                         try:
-                            reject_rule(rule["id"], actor_role=role)
+                            reject_rule(rule["id"], principal=principal, brand_id=brand_id)
                         except PermissionError as exc:
                             st.error(str(exc))
                         else:
@@ -242,7 +268,7 @@ def render(role: UserRole | None = None):
                 elif can_manage and status == "APPROVED" and rule["is_active"]:
                     if st.button("Deactivate rule", key=f"deactivate_rule_{rule['id']}"):
                         try:
-                            deactivate_rule(rule["id"], actor_role=role)
+                            deactivate_rule(rule["id"], principal=principal, brand_id=brand_id)
                         except PermissionError as exc:
                             st.error(str(exc))
                         else:
@@ -250,7 +276,7 @@ def render(role: UserRole | None = None):
                             st.rerun()
 
         if can_manage:
-            st.subheader("Propose a deterministic rule or terminology entry")
+            section_heading("Propose a rule or terminology entry")
             st.caption("Proposals remain inactive until a reviewer tests and approves them.")
             with st.form("create_rule_proposal_form"):
                 rule_name = st.text_input("Rule name")
@@ -277,7 +303,7 @@ def render(role: UserRole | None = None):
                         rule_name, description, rule_type, parameters,
                         positive.splitlines(), negative.splitlines(),
                         product_options[rule_product], guideline_options[linked_guideline],
-                        scope, severity,
+                        scope, severity, principal=principal, brand_id=brand_id,
                     )
                 except ValueError as exc:
                     st.error(str(exc))
@@ -301,7 +327,9 @@ def render(role: UserRole | None = None):
                     except UnicodeDecodeError:
                         st.error("Campaign JSON must be UTF-8 encoded.")
                     else:
-                        outcome = import_campaign_briefs_json(import_text)
+                        outcome = import_campaign_briefs_json(
+                            import_text, principal=principal, brand_id=brand_id
+                        )
                         if outcome["errors"]:
                             for error in outcome["errors"]:
                                 st.error(error)
@@ -309,7 +337,9 @@ def render(role: UserRole | None = None):
                             st.success(f"Imported {outcome['imported']} active campaign brief(s).")
                             st.rerun()
 
-        briefs = get_all_briefs(include_inactive=True)
+        briefs = get_all_briefs(
+            include_inactive=True, principal=principal, brand_id=brand_id
+        )
         if not briefs:
             st.info("No campaign briefs have been added.")
         for brief in briefs:
@@ -360,6 +390,7 @@ def render(role: UserRole | None = None):
                             update_campaign_brief(
                                 brief["id"], edit_name, new_product_id, edit_objective, edit_tone,
                                 edit_audience, edit_messages.splitlines(), edit_markets, edit_channels,
+                                principal=principal, brand_id=brand_id,
                             )
                         except ValueError as exc:
                             st.error(str(exc))
@@ -368,11 +399,11 @@ def render(role: UserRole | None = None):
                             st.rerun()
                 if can_manage and brief["is_active"]:
                     if st.button("Deactivate brief", key=f"deactivate_brief_{brief['id']}"):
-                        deactivate_brief(brief["id"])
+                        deactivate_brief(brief["id"], principal=principal, brand_id=brand_id)
                         st.success("Brief deactivated.")
                         st.rerun()
         if can_manage:
-            st.subheader("Create a campaign brief")
+            section_heading("Create a campaign brief")
             with st.form("create_campaign_brief_form"):
                 if products:
                     brief_product = st.selectbox("Product", [item["name"] for item in products])
@@ -395,6 +426,7 @@ def render(role: UserRole | None = None):
                     create_campaign_brief(
                         brief_name, product_id, objective, tone, audience,
                         key_messages.splitlines(), markets, channels,
+                        principal=principal, brand_id=brand_id,
                     )
                 except ValueError as exc:
                     st.error(str(exc))

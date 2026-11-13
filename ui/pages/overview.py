@@ -1,245 +1,215 @@
-"""Welcome and getting-started landing page."""
+"""Role-aware workspace dashboard with a clear next action."""
+
+from __future__ import annotations
+
+from datetime import datetime
 
 import streamlit as st
 
-from models.enums import UserRole
+from db.connection import get_connection
+from models.enums import BrandRole, UserRole
+from services.auth_service import AuthenticatedPrincipal
+from services.brand_service import require_brand_membership
 from services.knowledge_onboarding import get_setup_readiness
-from ui.components import page_header, section_heading
 from ui.styles import ai_disclosure, demo_banner, inject_styles
 
 
-def _navigate(
-    page: str,
-    role: str | None = None,
-    load_sample_review: bool = False,
-) -> None:
-    if role:
-        st.session_state["sidebar_role"] = role
-    if load_sample_review:
-        st.session_state["load_sample_review"] = True
+_PRIMARY_ACTIONS = {
+    BrandRole.OWNER.value: ("Start a content review", "New Review"),
+    UserRole.CREATOR.value: ("Start a content review", "New Review"),
+    UserRole.REVIEWER.value: ("Open the approval queue", "Draft Approvals"),
+    UserRole.FACT_OWNER.value: ("Review evidence updates", "Fact Approvals"),
+}
+
+
+def _dashboard_counts(brand_id: int) -> tuple[int, int, int, int]:
+    with get_connection() as conn:
+        counts = conn.execute(
+            """
+            SELECT
+                SUM(CASE WHEN status IN
+                    ('DRAFT','CHECKED','READY_FOR_REVIEW','CHANGES_REQUESTED')
+                    THEN 1 ELSE 0 END) AS active_reviews,
+                SUM(CASE WHEN status = 'READY_FOR_REVIEW'
+                    THEN 1 ELSE 0 END) AS awaiting_approval
+            FROM drafts WHERE brand_id = ?
+            """,
+            (brand_id,),
+        ).fetchone()
+        approved_this_month = conn.execute(
+            """
+            SELECT COUNT(DISTINCT r.draft_id) FROM review_events e
+            JOIN reviews r ON r.id = e.review_id
+            JOIN drafts d ON d.id = r.draft_id
+            WHERE d.brand_id = ? AND e.event_type = 'APPROVED'
+              AND strftime('%Y-%m', e.created_at) = strftime('%Y-%m', 'now')
+            """,
+            (brand_id,),
+        ).fetchone()[0]
+        evidence_attention = conn.execute(
+            """
+            SELECT COUNT(*) FROM approved_claims ac
+            JOIN drafts d ON d.id = ac.draft_id
+            WHERE d.brand_id = ? AND ac.drift_status IN ('REVIEW_REQUIRED','EXPIRED')
+            """,
+            (brand_id,),
+        ).fetchone()[0]
+    return (
+        counts["active_reviews"] or 0,
+        counts["awaiting_approval"] or 0,
+        evidence_attention,
+        approved_this_month,
+    )
+
+
+def _recent_activity(brand_id: int) -> list[dict]:
+    with get_connection() as conn:
+        rows = conn.execute(
+            """
+            SELECT actor_username, action, object_type, created_at
+            FROM audit_events WHERE brand_id = ?
+            ORDER BY id DESC LIMIT 5
+            """,
+            (brand_id,),
+        ).fetchall()
+    return [dict(row) for row in rows]
+
+
+def _render_ai_diagnostics() -> None:
+    from ai.base import AIProviderError, safe_error_summary
+    from ai.provider_factory import get_provider_diagnostics
+
+    diagnostics = get_provider_diagnostics()
+    st.caption("Tests send a fixed, non-draft prompt. Credential values are never displayed.")
+    st.write(f"Selected provider: **{diagnostics['selected_provider']}**")
+    columns = st.columns(2)
+    for column, provider_name, provider_key in zip(
+        columns, ("NVIDIA NIM", "Google Gemini"), ("nvidia", "gemini")
+    ):
+        config = diagnostics["providers"][provider_name]
+        with column:
+            st.markdown(f"**{provider_name}**")
+            st.caption(
+                f"Credential: {'configured' if config['credential_configured'] else 'not configured'} · "
+                f"Model: {config['model']}"
+            )
+            if st.button(
+                f"Test {provider_name}",
+                key=f"test_{provider_key}_provider_connection",
+                disabled=not config["credential_configured"],
+            ):
+                try:
+                    if provider_key == "nvidia":
+                        from ai.nvidia_provider import NvidiaNimProvider
+
+                        provider = NvidiaNimProvider()
+                    else:
+                        from ai.gemini_provider import GeminiProvider
+
+                        provider = GeminiProvider()
+                    provider.test_connection()
+                    st.session_state[f"{provider_key}_connection_result"] = {
+                        "success": True,
+                        "model": provider.last_model_used or config["model"],
+                    }
+                except AIProviderError as exc:
+                    st.session_state[f"{provider_key}_connection_result"] = {
+                        "success": False,
+                        "category": safe_error_summary(exc),
+                    }
+            result = st.session_state.get(f"{provider_key}_connection_result")
+            if result:
+                if result["success"]:
+                    st.success(f"Connected · {result['model']}")
+                else:
+                    st.error(result["category"])
+
+
+def _navigate(page: str) -> None:
     st.session_state["sidebar_page"] = page
 
 
-def render() -> None:
+def render(principal: AuthenticatedPrincipal) -> None:
     inject_styles()
-    readiness = get_setup_readiness()
-    page_header("Overview", "Brand Rule Lab")
-    st.subheader("Your pre-publication brand compliance workspace.")
-    st.write(
-        "Organise your brand knowledge, review marketing content against approved rules "
-        "and evidence, correct issues, and manage human approvals before publication."
+    brand_id = st.session_state.get("active_brand_id")
+    membership = require_brand_membership(principal, brand_id)
+    role = membership["role"]
+    readiness = get_setup_readiness(principal, brand_id)
+    active, awaiting, attention, approved = _dashboard_counts(brand_id)
+
+    hour = datetime.now().hour
+    greeting = "Good morning" if hour < 12 else "Good afternoon" if hour < 18 else "Good evening"
+    st.caption("WORKSPACE / OVERVIEW")
+    st.title(f"{greeting}, {principal.username}.")
+    st.write(f"{membership['name']} is ready. What would you like to work on?")
+    if membership["slug"] == "demo-brand":
+        demo_banner()
+
+    action_label, action_page = _PRIMARY_ACTIONS.get(
+        role, ("Open your workspace", "Brand Knowledge")
     )
-    demo_banner()
-    st.info(
-        "The demo workspace is available without signing in. The role selector is a "
-        "demonstration control, not authentication or real access control."
-    )
+    button_label = "＋  " + action_label
+    if st.button(button_label, type="primary", key="overview_primary_action"):
+        _navigate(action_page)
+        st.rerun()
 
-    section_heading("Try the core workflow")
-    st.write(
-        "Submit marketing copy → inspect rule-based findings and evidence → correct the draft "
-        "and make a human decision. You can try this now without setting up a brand first."
-    )
-    action_cols = st.columns(3)
-    action_cols[0].button(
-        "Try a guided sample review",
-        type="primary",
-        width="stretch",
-        on_click=_navigate,
-        args=("New Review", UserRole.CREATOR.value, True),
-    )
-    action_cols[1].button(
-        "Review my own content",
-        width="stretch",
-        on_click=_navigate,
-        args=("New Review", UserRole.CREATOR.value),
-    )
-    action_cols[2].button(
-        "Set up brand knowledge",
-        width="stretch",
-        on_click=_navigate,
-        args=("Brand Knowledge",),
-    )
+    metrics = st.columns(4, gap="medium")
+    for column, label, value in zip(
+        metrics,
+        ("Active reviews", "Awaiting approval", "Evidence needs review", "Approved this month"),
+        (active, awaiting, attention, approved),
+    ):
+        column.metric(label, value)
 
-    with st.expander("AI provider connection diagnostics", expanded=False):
-        from ai.base import AIProviderError, safe_error_summary
-        from ai.provider_factory import get_provider_diagnostics
+    activity_column, next_column = st.columns([1.2, 0.8], gap="large")
+    with activity_column:
+        st.subheader("Recent activity")
+        activity = _recent_activity(brand_id)
+        if not activity:
+            st.caption("Workspace activity will appear here as reviews and decisions are recorded.")
+        for item in activity:
+            st.markdown(
+                f"**{item['action'].replace('_', ' ').title()}** · "
+                f"{item['object_type']} · {item['actor_username']}"
+            )
+            st.caption(item["created_at"])
 
-        diagnostics = get_provider_diagnostics()
-        st.caption(
-            "Each test sends a fixed, non-draft prompt directly to one provider. "
-            "Credential values are never displayed."
-        )
-        st.write(f"Provider selected: **{diagnostics['selected_provider']}**")
-        nvidia_column, gemini_column = st.columns(2)
-        provider_columns = (
-            (nvidia_column, "NVIDIA NIM", "nvidia"),
-            (gemini_column, "Google Gemini", "gemini"),
-        )
-        for column, provider_name, provider_key in provider_columns:
-            config = diagnostics["providers"][provider_name]
-            with column:
-                st.markdown(f"**{provider_name}**")
-                st.write(
-                    "Credential configured: "
-                    + ("**YES**" if config["credential_configured"] else "**NO**")
-                )
-                st.write("Provider selected: " + ("**YES**" if config["selected"] else "**NO**"))
-                st.write(f"Model configured: `{config['model']}`")
-                if st.button(
-                    f"Test {provider_name} connection",
-                    key=f"test_{provider_key}_provider_connection",
-                    disabled=not config["credential_configured"],
-                ):
-                    try:
-                        if provider_key == "nvidia":
-                            from ai.nvidia_provider import NvidiaNimProvider
+    with next_column:
+        st.subheader("Your next step")
+        if role in {BrandRole.OWNER.value, UserRole.CREATOR.value}:
+            next_items = [
+                ("Create a review", "New Review"),
+                ("Continue a review", "Review Results"),
+            ]
+        elif role == UserRole.REVIEWER.value:
+            next_items = [
+                ("Decide on submitted content", "Draft Approvals"),
+                ("Review proposed rules", "Rule Readiness"),
+            ]
+        else:
+            next_items = [
+                ("Review pending evidence", "Fact Approvals"),
+                ("Update brand knowledge", "Brand Knowledge"),
+            ]
+        for label, page in next_items:
+            if st.button(label, key=f"overview_next_{page.casefold().replace(' ', '_')}"):
+                _navigate(page)
+                st.rerun()
 
-                            provider = NvidiaNimProvider()
-                        else:
-                            from ai.gemini_provider import GeminiProvider
+    with st.expander("Workspace setup", expanded=False):
+        st.caption("Optional setup improves review coverage. You can start a review now.")
+        for item in readiness["checklist"]:
+            status = "Ready" if item["done"] else "Not set up"
+            st.markdown(f"**{item['label']}** · {status}")
+        if readiness["documents_attention"]:
+            st.warning(
+                f"{readiness['documents_attention']} source document(s) need attention. "
+                "Check their extraction warnings before relying on their content."
+            )
 
-                            provider = GeminiProvider()
-                        provider.test_connection()
-                        st.session_state[f"{provider_key}_connection_result"] = {
-                            "success": True,
-                            "model": provider.last_model_used or config["model"],
-                        }
-                    except AIProviderError as exc:
-                        st.session_state[f"{provider_key}_connection_result"] = {
-                            "success": False,
-                            "category": safe_error_summary(exc),
-                        }
-
-                result = st.session_state.get(f"{provider_key}_connection_result")
-                if result:
-                    if result["success"]:
-                        st.success(f"Connection result: SUCCESS · model: {result['model']}")
-                    else:
-                        st.error(f"Connection result: {result['category']}")
-
-    st.markdown("---")
-    section_heading("Optional workspace setup")
-    st.caption(
-        "These steps help customise the workspace but are not required to try the content review."
-    )
-    metric_rows = (
-        (
-            ("Active guidelines", readiness["rules"]),
-            ("Approved facts", readiness["facts"]),
-            ("Approved terminology", readiness["terminology"]),
-        ),
-        (
-            ("Approved assets", readiness["assets"]),
-            ("Unresolved conflicts", readiness["conflicts"]),
-            ("Awaiting knowledge review", readiness["pending_entries"]),
-        ),
-    )
-    for row in metric_rows:
-        columns = st.columns(3)
-        for column, (label, value) in zip(columns, row):
-            column.metric(label, value)
-    if readiness["documents_attention"]:
-        st.warning(
-            f"{readiness['documents_attention']} document(s) need attention. "
-            "Inspect extraction warnings and correct text before using it as a source."
-        )
-    if not readiness["brand_identity"]:
-        st.info("Brand identity has not been saved yet. You can still start a review with the available demo knowledge.")
-
-    with st.expander("Optional setup checklist"):
-        st.caption(
-            "This reflects records already in the shared workspace, not your personal progress. "
-            "You can skip these steps and still try the content review."
-        )
-        for index, item in enumerate(readiness["checklist"], start=1):
-            status = "Already in workspace" if item["done"] else "Not set up"
-            st.markdown(f"**{index}. {item['label']}** · {status}")
-
-    steps = [
-        (
-            "1. Access your workspace",
-            "Open the demo without an account or sign-in. No real user accounts or role-based access are implemented here.",
-            ("Brand Knowledge", None, "Open Brand Knowledge"),
-        ),
-        (
-            "2. Set up your brand",
-            "Upload supported documents, inspect scanned-page extraction, or enter brand information manually. Add product facts, terminology and visual assets as needed.",
-            ("Brand Knowledge", None, "Set up Brand Knowledge"),
-        ),
-        (
-            "3. Verify proposed knowledge",
-            "AI can organise extracted text into proposals. Compare source quotations with the original and approve each entry using the appropriate simulated reviewer role.",
-            ("Brand Knowledge", None, "Review knowledge proposals"),
-        ),
-        (
-            "4. Create a content review",
-            "Submit marketing copy, product descriptions or supported campaign content for checks against available approved information.",
-            ("New Review", UserRole.CREATOR.value, "Create a review"),
-        ),
-        (
-            "5. Understand review results",
-            "Review findings, severity, source-linked evidence, suggested corrections and checks that could not be completed. AI suggestions are not approvals.",
-            ("Review Results", UserRole.CREATOR.value, "Open Review Results"),
-        ),
-        (
-            "6. Request human approval",
-            "After making corrections and rechecking the draft, submit it to the simulated Reviewer queue for a human decision.",
-            ("Draft Approvals", UserRole.REVIEWER.value, "Open Draft Approvals"),
-        ),
-        (
-            "7. Monitor claims and patterns",
-            "Use the Claim Ledger and Review History to inspect claims and drift, and Insights to find recurring compliance problems.",
-            ("Claim Ledger", UserRole.REVIEWER.value, "Open Claim Ledger"),
-        ),
-    ]
-    for step_index, (title, description, (page, role, action)) in enumerate(steps, start=1):
-        with st.expander(title):
-            st.write(description)
-            if title.startswith("3."):
-                left, right = st.columns(2)
-                left.button(
-                    action, key="welcome_knowledge_approval",
-                    on_click=_navigate, args=(page,),
-                )
-                right.button(
-                    "Open Fact Approvals", key="welcome_fact_approval",
-                    on_click=_navigate, args=("Fact Approvals", UserRole.FACT_OWNER.value),
-                )
-            else:
-                st.button(
-                    action, key=f"welcome_step_{step_index}",
-                    on_click=_navigate, args=(page, role),
-                )
-
-    st.markdown("---")
-    section_heading("Where do I find things?")
-    navigation = [
-        ("Overview / Welcome", "Learn how to use Brand Rule Lab", "Overview", None),
-        ("Brand Knowledge", "Set up a brand and review extracted proposals", "Brand Knowledge", None),
-        ("Brand Guidelines", "Manage saved brand guidelines", "Brand Guidelines", None),
-        ("Products & Facts", "Add products and manage product facts", "Products & Facts", None),
-        ("Brand Assets", "Register and manage visual assets", "Brand Assets", None),
-        ("New Review", "Submit content for checking", "New Review", UserRole.CREATOR.value),
-        ("Review Results", "Understand findings and recommended corrections", "Review Results", UserRole.CREATOR.value),
-        ("Draft Approvals", "Handle submitted draft approval requests", "Draft Approvals", UserRole.REVIEWER.value),
-        ("Fact Approvals", "Approve or reject product fact versions", "Fact Approvals", UserRole.FACT_OWNER.value),
-        ("Claim Ledger", "Review approved claims and their status", "Claim Ledger", UserRole.REVIEWER.value),
-        ("Review History", "Browse previous reviews", "Review History", None),
-        ("Insights", "Monitor recurring review outcomes", "Insights", None),
-    ]
-    for display, purpose, page, role in navigation:
-        left, right = st.columns([3, 1])
-        left.write(f"**{display}** — {purpose}")
-        right.button(
-            "Open", key=f"where_{page}",
-            on_click=_navigate, args=(page, role),
-        )
-
-    with st.expander("What information may be sent to AI?"):
-        ai_disclosure()
-        st.write(
-            "For document onboarding, extracted text is sent only after you select the explicit "
-            "consent checkbox and request AI extraction. Raw binary documents are parsed and "
-            "stored locally; they are not sent as files."
-        )
+    if role in {BrandRole.OWNER.value, UserRole.REVIEWER.value}:
+        with st.expander("AI and data use"):
+            ai_disclosure()
+        if role == BrandRole.OWNER.value:
+            with st.expander("Advanced · provider diagnostics"):
+                _render_ai_diagnostics()

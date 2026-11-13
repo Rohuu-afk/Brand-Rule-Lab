@@ -771,8 +771,9 @@ def ensure_monsoon_rules(conn) -> None:
             """
             INSERT INTO brand_rules (
                 product_id, guideline_id, name, description, rule_type, scope,
-                parameters, severity, positive_tests, negative_tests, is_active, owner_approved
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, 1)
+                parameters, severity, positive_tests, negative_tests, is_active,
+                owner_approved, review_status, readiness_class, checking_method
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, 1, 'APPROVED', 'CODE_CHECKABLE', ?)
             """,
             (
                 monsoon_pid,
@@ -785,9 +786,32 @@ def ensure_monsoon_rules(conn) -> None:
                 "HIGH",
                 json.dumps(["Formulated to clarify skin and reduce blemishes."]),
                 json.dumps(["It's the best solution for everyone."]),
+                "Deterministic demo rule linked to the approved fictional superlatives policy.",
             ),
         )
         conn.commit()
+
+
+def _ensure_seed_rules_ready(conn) -> None:
+    """Repair legacy seeded rules whose new readiness fields defaulted to blank."""
+    names = [rule["name"] for rule in BRAND_RULES]
+    names.append("Monsoon: Unsupported Superlatives Prohibited")
+    for name in names:
+        conn.execute(
+            """
+            UPDATE brand_rules
+            SET review_status = CASE WHEN review_status = 'PROPOSED'
+                                     THEN 'APPROVED' ELSE review_status END,
+                readiness_class = 'CODE_CHECKABLE',
+                checking_method = COALESCE(NULLIF(trim(checking_method), ''), ?)
+            WHERE name = ? AND is_active = 1 AND owner_approved = 1
+              AND review_status = 'PROPOSED'
+            """,
+            (
+                "Deterministic seeded demo rule; linked source guideline is shown with findings.",
+                name,
+            ),
+        )
 
 
 def seed(force: bool = False, verbose: bool = True) -> None:
@@ -798,6 +822,8 @@ def seed(force: bool = False, verbose: bool = True) -> None:
 
         if not force and _already_seeded(conn):
             ensure_monsoon_rules(conn)
+            _ensure_seed_rules_ready(conn)
+            conn.commit()
             if verbose:
                 print("[info] Demo database already seeded. Skipping re-seed.")
             return
@@ -853,13 +879,15 @@ def seed(force: bool = False, verbose: bool = True) -> None:
                 conn.execute(
                     "INSERT INTO brand_rules "
                     "(product_id, guideline_id, name, description, rule_type, scope, parameters, "
-                    " severity, positive_tests, negative_tests, is_active, owner_approved) "
-                    "VALUES (?,?,?,?,?,?,?,?,?,?,?,?)",
+                    " severity, positive_tests, negative_tests, is_active, owner_approved, "
+                    "review_status, readiness_class, checking_method) "
+                    "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,'APPROVED','CODE_CHECKABLE',?)",
                     (
                         pid, gid, r["name"], r["description"], r["rule_type"],
                         r["scope"], r["parameters"], r["severity"],
                         r["positive_tests"], r["negative_tests"],
                         r["is_active"], r["owner_approved"],
+                        "Deterministic seeded demo rule; linked source guideline is shown with findings.",
                     ),
                 )
         conn.commit()
@@ -927,6 +955,8 @@ def seed(force: bool = False, verbose: bool = True) -> None:
 
         # Targeted check for Monsoon governance rules
         ensure_monsoon_rules(conn)
+        _ensure_seed_rules_ready(conn)
+        conn.commit()
 
         total_p = conn.execute("SELECT COUNT(*) AS n FROM products").fetchone()["n"]
         total_g = conn.execute("SELECT COUNT(*) AS n FROM guidelines").fetchone()["n"]

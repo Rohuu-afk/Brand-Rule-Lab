@@ -10,7 +10,13 @@ from typing import Any
 
 from db.connection import get_connection
 from engines.rule_engine import run_self_tests, validate_regex_pattern
-from models.enums import RuleType, Severity, UserRole
+from models.enums import BrandRole, RuleType, Severity, UserRole
+from services.auth_service import (
+    AuthenticatedPrincipal,
+    require_legacy_test_actor,
+    require_principal,
+)
+from services.brand_service import require_brand_membership, require_record_brand
 
 
 RULE_CATEGORIES = {"BRAND_RULE", "TONE", "TERMINOLOGY", "RESTRICTION"}
@@ -48,6 +54,7 @@ _SCOPE_FIELDS = {"market", "markets", "channel", "channels", "content_type"}
 
 
 def _reviewer(actor_role: UserRole | str | None) -> None:
+    require_legacy_test_actor("review rule readiness proposals")
     role_value = actor_role.value if isinstance(actor_role, UserRole) else str(actor_role or "")
     if role_value.strip().casefold() not in {"reviewer", "brand manager"}:
         raise PermissionError("Rule readiness decisions require the Reviewer demo role.")
@@ -206,17 +213,30 @@ def validate_predicate(rule_type: str, parameters: Any) -> dict[str, Any]:
     return dict(parameters)
 
 
-def get_rule_proposals() -> list[dict[str, Any]]:
+def get_rule_proposals(
+    principal: AuthenticatedPrincipal | None = None,
+    brand_id: int | None = None,
+) -> list[dict[str, Any]]:
+    if principal is None:
+        require_legacy_test_actor("read unscoped rule proposals")
     with get_connection() as conn:
+        params: tuple = ()
+        scope = ""
+        if principal is not None:
+            if brand_id is None:
+                raise ValueError("A brand is required for authenticated rule proposals.")
+            require_brand_membership(principal, brand_id, (BrandRole.OWNER, BrandRole.REVIEWER))
+            scope = " AND e.brand_id = ?"
+            params = (brand_id,)
         rows = conn.execute(
             """
             SELECT e.*, d.filename AS source_filename, p.name AS product_name
             FROM knowledge_entries e
             LEFT JOIN knowledge_documents d ON d.id = e.document_id
             LEFT JOIN products p ON p.id = e.product_id
-            WHERE e.category IN ('BRAND_RULE','TONE','TERMINOLOGY','RESTRICTION')
+            WHERE e.category IN ('BRAND_RULE','TONE','TERMINOLOGY','RESTRICTION')""" + scope + """
             ORDER BY e.created_at DESC, e.id DESC
-            """
+            """, params
         ).fetchall()
     results = []
     for row in rows:
@@ -247,6 +267,8 @@ def save_rule_classification(
     actor: str,
     *,
     actor_role: UserRole | str | None = None,
+    principal: AuthenticatedPrincipal | None = None,
+    brand_id: int | None = None,
     rule_type: str | None = None,
     parameters: dict[str, Any] | None = None,
     scope: dict[str, Any] | None = None,
@@ -255,7 +277,15 @@ def save_rule_classification(
     negative_tests: list[str] | None = None,
     clarification_note: str = "",
 ) -> None:
-    _reviewer(actor_role)
+    actor_name = actor
+    authenticated_actor = (
+        require_principal(principal, action="classify rule proposals")
+        if principal else None
+    )
+    if authenticated_actor is None:
+        _reviewer(actor_role)
+    else:
+        actor_name = authenticated_actor.username
     classification = readiness_classification.strip().upper()
     if classification not in READINESS_CLASSES:
         raise ValueError("Select one of the four supported rule readiness classifications.")
@@ -292,6 +322,13 @@ def save_rule_classification(
             entry = conn.execute(
                 "SELECT * FROM knowledge_entries WHERE id = ?", (entry_id,)
             ).fetchone()
+            if authenticated_actor is not None:
+                if brand_id is None:
+                    raise ValueError("A brand is required for authenticated rule classification.")
+                require_record_brand(
+                    conn, authenticated_actor, brand_id, "knowledge_entries", entry_id,
+                    roles=(BrandRole.OWNER, BrandRole.REVIEWER),
+                )
             if entry is None or entry["category"] not in RULE_CATEGORIES:
                 raise ValueError("The selected entry is not a rule-readiness proposal.")
             if entry["status"] not in {
@@ -341,7 +378,7 @@ def save_rule_classification(
                 """,
                 (
                     entry_id, version, "CLASSIFIED" if classification != "UNCLEAR" else "CLARIFICATION_REQUIRED",
-                    actor, classification, method, rule_type,
+                    actor_name, classification, method, rule_type,
                     json.dumps(parameters or {}, ensure_ascii=False),
                     json.dumps(scope or {}, ensure_ascii=False), severity,
                     json.dumps(positive_tests or [], ensure_ascii=False),
@@ -357,7 +394,7 @@ def save_rule_classification(
                 "VALUES (?, ?, ?, ?)",
                 (
                     entry_id, "CLASSIFIED" if classification != "UNCLEAR" else "CLARIFY",
-                    actor, clarification_note.strip() or method,
+                    actor_name, clarification_note.strip() or method,
                 ),
             )
             conn.commit()
@@ -371,8 +408,17 @@ def approve_rule_proposal(
     actor: str,
     *,
     actor_role: UserRole | str | None = None,
+    principal: AuthenticatedPrincipal | None = None,
+    brand_id: int | None = None,
 ) -> dict[str, Any]:
-    _reviewer(actor_role)
+    authenticated_actor = (
+        require_principal(principal, action="approve rule proposals")
+        if principal is not None else None
+    )
+    if authenticated_actor is None:
+        _reviewer(actor_role)
+    else:
+        actor = authenticated_actor.username
     with get_connection() as conn:
         conn.execute("BEGIN IMMEDIATE")
         try:
@@ -385,6 +431,14 @@ def approve_rule_proposal(
                 """,
                 (entry_id,),
             ).fetchone()
+            if authenticated_actor is not None:
+                if brand_id is None:
+                    raise ValueError("A brand is required for authenticated rule approval.")
+                require_record_brand(
+                    conn, authenticated_actor, brand_id,
+                    "knowledge_entries", entry_id,
+                    roles=(BrandRole.OWNER, BrandRole.REVIEWER),
+                )
             if entry is None or entry["category"] not in RULE_CATEGORIES:
                 raise ValueError("The selected entry is not a rule-readiness proposal.")
             if entry["rule_readiness_classification"] == "UNCLEAR":

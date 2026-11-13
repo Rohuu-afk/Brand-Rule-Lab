@@ -29,6 +29,7 @@ def run_review(*args, **kwargs):
 def isolated_database(tmp_path, monkeypatch):
     monkeypatch.setenv("DATABASE_PATH", str(tmp_path / "claims.sqlite"))
     monkeypatch.setenv("UPLOADS_PATH", str(tmp_path / "uploads"))
+    monkeypatch.setenv("BRL_ENABLE_LEGACY_TEST_ACTORS", "1")
     monkeypatch.delenv("NVIDIA_API_KEY", raising=False)
     monkeypatch.delenv("GEMINI_API_KEY", raising=False)
     apply_schema()

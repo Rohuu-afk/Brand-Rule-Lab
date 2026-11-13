@@ -4,7 +4,9 @@ from __future__ import annotations
 
 import streamlit as st
 
-from models.enums import UserRole
+from models.enums import BrandRole
+from services.auth_service import AuthenticatedPrincipal
+from services.brand_service import require_brand_membership
 from services.document_parser import MAX_BYTES
 from services.asset_service import decide_asset, register_image_asset
 from services.guideline_service import get_all_assets, get_all_products
@@ -12,15 +14,19 @@ from ui.styles import demo_banner, inject_styles
 from ui.components import page_header
 
 
-def render(role: UserRole | None = None):
+def render(principal: AuthenticatedPrincipal | None = None):
     inject_styles()
     page_header("Workspace", "Brand Assets")
     demo_banner()
-    can_manage = role in (UserRole.REVIEWER, UserRole.FACT_OWNER)
+    brand_id = st.session_state.get("active_brand_id")
+    membership = require_brand_membership(principal, brand_id)
+    role = membership["role"]
+    can_manage = role in {
+        BrandRole.OWNER.value, BrandRole.REVIEWER.value, BrandRole.FACT_OWNER.value
+    }
     if not can_manage:
-        st.info("Asset registration and approval are available to Reviewer/Fact Owner demo roles.")
-
-    products = get_all_products()
+        st.info("Asset registration and approval are available to workspace Reviewers, Fact Owners and Owners.")
+    products = get_all_products(principal=principal, brand_id=brand_id)
     product_options = {p["name"]: p["id"] for p in products}
     if not products:
         st.info("Add a product before registering assets.")
@@ -28,7 +34,10 @@ def render(role: UserRole | None = None):
 
     selected = st.selectbox("Filter by product", ["All Products"] + list(product_options))
     product_id = product_options.get(selected)
-    assets = get_all_assets(product_id=product_id, include_inactive=True)
+    assets = get_all_assets(
+        product_id=product_id, include_inactive=True,
+        principal=principal, brand_id=brand_id,
+    )
 
     for asset in assets:
         state = "Approved and active" if asset["is_active"] and asset["owner_approved"] else (
@@ -41,12 +50,12 @@ def render(role: UserRole | None = None):
             st.caption("Perceptual hashes indicate similarity only; they do not prove visual correctness.")
             if can_manage and not asset["owner_approved"]:
                 if st.button("Approve asset", key=f"asset_approve_{asset['id']}"):
-                    decide_asset(asset["id"], approved=True, actor_role=role)
+                    decide_asset(asset["id"], approved=True, principal=principal, brand_id=brand_id)
                     st.success("Asset approved.")
                     st.rerun()
             elif can_manage and asset["is_active"]:
                 if st.button("Disable asset", key=f"asset_disable_{asset['id']}"):
-                    decide_asset(asset["id"], approved=False, actor_role=role)
+                    decide_asset(asset["id"], approved=False, principal=principal, brand_id=brand_id)
                     st.success("Asset disabled.")
                     st.rerun()
 
@@ -68,6 +77,8 @@ def render(role: UserRole | None = None):
                     asset_id = register_image_asset(
                         name, asset_type, uploaded.name, uploaded.getvalue(),
                         product_options[product_name],
+                        principal=principal,
+                        brand_id=brand_id,
                     )
                 except ValueError as exc:
                     st.error(str(exc))

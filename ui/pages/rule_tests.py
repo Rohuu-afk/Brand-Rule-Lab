@@ -11,7 +11,7 @@ import streamlit as st
 from engines.rule_engine import run_self_tests
 from services.guideline_service import get_all_rules
 from ui.components import page_header
-from ui.styles import inject_styles
+from ui.styles import demo_banner, inject_styles
 
 
 def _decode_test_list(value: Any, field_name: str) -> list[str]:
@@ -60,13 +60,16 @@ def evaluate_rule_test_cases(rules: Sequence[Mapping[str, Any]]) -> list[dict[st
     return reports
 
 
-def render() -> None:
+def render(principal=None) -> None:
     inject_styles()
     page_header("Governance", "Rule Tests")
+    demo_banner()
     st.caption("Read-only checks of the positive and negative examples stored with approved rules.")
 
     active_rules = [
-        rule for rule in get_all_rules()
+        rule for rule in get_all_rules(
+            principal=principal, brand_id=st.session_state.get("active_brand_id")
+        )
         if rule.get("is_active") and rule.get("owner_approved")
     ]
     if not active_rules:

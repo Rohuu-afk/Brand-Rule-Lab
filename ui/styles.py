@@ -490,6 +490,152 @@ button, [role="button"], [data-baseweb="tab"] {
 hr { border-color: rgba(255, 255, 255, 0.76) !important; }
 code { color: #315B5E; background: rgba(214, 237, 237, 0.7); border-radius: 5px; }
 
+
+/* ---- Utility: step-number labels for multi-step forms ---- */
+.brl-step-label {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.5rem;
+    margin: 1.4rem 0 0.5rem;
+    color: var(--brl-text);
+    font-size: 1.08rem;
+    font-weight: 640;
+}
+.brl-step-label__num {
+    display: grid;
+    place-items: center;
+    width: 26px;
+    height: 26px;
+    border-radius: 50%;
+    background: var(--brl-dark);
+    color: var(--brl-pearl);
+    font-size: 0.72rem;
+    font-weight: 720;
+    flex-shrink: 0;
+}
+
+.brl-review-stepper {
+    display: grid;
+    grid-template-columns: repeat(4, minmax(0, 1fr));
+    gap: 0.7rem;
+    margin: 0.4rem 0 1.5rem;
+}
+.brl-review-step {
+    display: flex;
+    align-items: center;
+    gap: 0.55rem;
+    min-width: 0;
+    padding: 0.65rem 0.75rem;
+    border: 1px solid var(--brl-border);
+    border-radius: var(--brl-radius-sm);
+    color: var(--brl-text-secondary);
+    background: var(--brl-frosted);
+}
+.brl-review-step.is-active {
+    color: var(--brl-text);
+    border-color: rgba(139, 124, 255, 0.48);
+    box-shadow: var(--brl-shadow-raised);
+}
+.brl-review-step.is-complete { color: var(--brl-text); }
+.brl-review-step__number {
+    display: grid;
+    place-items: center;
+    flex: 0 0 1.55rem;
+    height: 1.55rem;
+    border-radius: 50%;
+    color: var(--brl-text-secondary);
+    background: var(--brl-bg-secondary);
+    font-size: 0.78rem;
+    font-weight: 700;
+}
+.brl-review-step.is-active .brl-review-step__number {
+    color: var(--brl-pearl);
+    background: var(--brl-dark);
+}
+.brl-review-step__label {
+    overflow: hidden;
+    font-size: 0.82rem;
+    font-weight: 620;
+    line-height: 1.2;
+    text-overflow: ellipsis;
+    white-space: normal;
+}
+.brl-copy-preview {
+    max-height: 24rem;
+    overflow: auto;
+    padding: 1rem 1.1rem;
+    border: 1px solid var(--brl-border);
+    border-radius: var(--brl-radius-sm);
+    color: var(--brl-text);
+    background: var(--brl-raised);
+    box-shadow: var(--brl-shadow-inset);
+    font-size: 0.94rem;
+    line-height: 1.7;
+    overflow-wrap: anywhere;
+    white-space: pre-wrap;
+}
+.brl-copy-highlight {
+    padding: 0.05rem 0.12rem;
+    border-radius: 0.2rem;
+    color: var(--brl-text);
+    background: rgba(139, 124, 255, 0.28);
+    text-decoration: underline;
+    text-decoration-color: var(--brl-dark);
+    text-underline-offset: 0.18rem;
+}
+
+/* ---- Utility: subtle divider between form sections ---- */
+.brl-section-divider {
+    margin: 1.5rem 0 1.2rem;
+    border: 0;
+    border-top: 1px solid rgba(255, 255, 255, 0.52);
+}
+
+/* ---- Tighten section headings when immediately following content ---- */
+.brl-section-heading + [data-testid="stVerticalBlock"] {
+    margin-top: 0;
+}
+
+/* ---- Member list row in Team page ---- */
+.brl-member-row {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 0.5rem 0;
+    border-bottom: 1px solid rgba(255, 255, 255, 0.38);
+}
+.brl-member-row:last-child { border-bottom: 0; }
+
+/* ---- Event timeline cards in ledger ---- */
+.brl-event-card {
+    padding: 0.6rem 1rem;
+    margin-bottom: 0.5rem;
+    border-radius: 0 var(--brl-radius-sm) var(--brl-radius-sm) 0;
+    background: var(--brl-raised);
+    border: 1px solid var(--brl-border);
+    border-left-width: 4px;
+}
+.brl-event-card > span {
+    margin-left: 0.4rem;
+    color: var(--brl-text-secondary);
+    font-size: 0.8rem;
+}
+.brl-event-card > time {
+    float: right;
+    color: var(--brl-text-muted);
+    font-size: 0.76rem;
+}
+.brl-event-note {
+    margin: -0.2rem 0 0.7rem 0.5rem;
+    padding: 0.45rem 0.7rem;
+    border-left: 2px solid var(--brl-border);
+    color: var(--brl-text-secondary);
+    font-size: 0.88rem;
+    white-space: pre-wrap;
+}
+
+/* ---- Insight bar chart wrapper ---- */
+.brl-bar-chart { margin: 0.5rem 0 1rem; }
 @keyframes brl-arrive {
     from { opacity: 0; transform: translateY(5px); }
     to { opacity: 1; transform: translateY(0); }
@@ -503,6 +649,8 @@ code { color: #315B5E; background: rgba(214, 237, 237, 0.7); border-radius: 5px;
     .brl-page-heading { margin-bottom: 1.2rem; }
     .brl-page-heading__title { font-size: 1.55rem; }
     [data-testid="stMetric"] { min-height: 5.2rem; padding: 0.8rem; }
+    .brl-review-stepper { grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 0.45rem; }
+    .brl-review-step { padding: 0.55rem; }
 }
 @media (prefers-reduced-motion: reduce) {
     *, *::before, *::after { animation-duration: 0.01ms !important; transition-duration: 0.01ms !important; }
@@ -526,24 +674,24 @@ code { color: #315B5E; background: rgba(214, 237, 237, 0.7); border-radius: 5px;
 DARK_MODE_CSS = """
 <style>
 :root {
-    --brl-bg: #10191c;
-    --brl-bg-secondary: #17272b;
-    --brl-pearl: #edf8f7;
-    --brl-frosted: rgba(22, 37, 39, 0.72);
-    --brl-raised: rgba(26, 42, 45, 0.82);
-    --brl-text: #dfe9e8;
-    --brl-text-secondary: #b7c9c7;
-    --brl-text-muted: #9eb4b1;
-    --brl-border: rgba(164, 196, 190, 0.18);
-    --brl-dark: #2a6e74;
-    --brl-pass: #9bd0b1;
-    --brl-pass-bg: rgba(39, 93, 65, 0.42);
-    --brl-fail: #f2a7a1;
-    --brl-fail-bg: rgba(115, 48, 48, 0.42);
+    --brl-bg: #0b0d12;
+    --brl-bg-secondary: #11141b;
+    --brl-pearl: #f3f4f8;
+    --brl-frosted: rgba(23, 27, 36, 0.88);
+    --brl-raised: #171b24;
+    --brl-text: #f3f4f8;
+    --brl-text-secondary: #b1b8c5;
+    --brl-text-muted: #9ba3b2;
+    --brl-border: #272d38;
+    --brl-dark: #8b7cff;
+    --brl-pass: #83c99d;
+    --brl-pass-bg: rgba(39, 93, 65, 0.3);
+    --brl-fail: #f29a9a;
+    --brl-fail-bg: rgba(115, 48, 48, 0.32);
     --brl-warning: #eecb8d;
-    --brl-warning-bg: rgba(111, 81, 31, 0.4);
-    --brl-info: #a9d5db;
-    --brl-info-bg: rgba(38, 91, 99, 0.4);
+    --brl-warning-bg: rgba(111, 81, 31, 0.3);
+    --brl-info: #a9c8ee;
+    --brl-info-bg: rgba(38, 65, 99, 0.35);
     --brl-shadow-glass: 0 18px 46px rgba(0, 0, 0, 0.24), 0 4px 14px rgba(0, 0, 0, 0.12);
     --brl-shadow-raised: 0 10px 24px rgba(0, 0, 0, 0.2), inset 0 1px 0 rgba(255, 255, 255, 0.03);
     --brl-shadow-inset: inset 0 1px 3px rgba(0, 0, 0, 0.22), inset 0 -1px 0 rgba(255, 255, 255, 0.02);
@@ -573,18 +721,16 @@ small,
 }
 
 .stApp {
-    background: linear-gradient(125deg, #0d1b1d 0%, #132d30 32%, #1a2f38 68%, #1f272f 100%) !important;
+    background: #0b0d12 !important;
     color: var(--brl-text);
 }
 .stApp::before {
-    background:
-        linear-gradient(112deg, rgba(32, 126, 132, 0.08) 0%, transparent 31%, transparent 69%, rgba(154, 111, 90, 0.08) 100%),
-        linear-gradient(12deg, transparent 0%, rgba(255, 255, 255, 0.02) 42%, rgba(90, 130, 142, 0.05) 76%, transparent 100%);
+    background: none;
 }
-[data-testid="stHeader"] { background: rgba(15, 25, 28, 0.42) !important; }
+[data-testid="stHeader"] { background: rgba(11, 13, 18, 0.94) !important; }
 [data-testid="stSidebarContent"] {
     border-color: rgba(180, 211, 205, 0.18);
-    background: linear-gradient(180deg, rgba(19, 38, 42, 0.9), rgba(12, 24, 28, 0.84)) !important;
+    background: #11141b !important;
     box-shadow: 0 18px 44px rgba(0, 0, 0, 0.2), inset 1px 1px 0 rgba(255, 255, 255, 0.04);
 }
 [data-testid="stSidebar"] [data-testid="stBaseButton-secondary"] {
@@ -599,8 +745,8 @@ small,
 }
 [data-testid="stSidebar"] [data-testid="stBaseButton-primary"] {
     color: var(--brl-text) !important;
-    background: rgba(119, 175, 175, 0.12) !important;
-    border-color: rgba(157, 211, 203, 0.14) !important;
+    background: rgba(139, 124, 255, 0.15) !important;
+    border-color: rgba(139, 124, 255, 0.26) !important;
     box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.05) !important;
 }
 [data-testid="stSidebar"] [data-testid="stBaseButton-primary"]:hover {
@@ -641,8 +787,8 @@ small,
 input, textarea, [data-baseweb="select"] > div,
 [data-testid="stDateInput"] input, [data-testid="stNumberInput"] input {
     color: var(--brl-text) !important;
-    background: rgba(15, 27, 30, 0.84) !important;
-    border-color: rgba(180, 211, 205, 0.23) !important;
+    background: #11141b !important;
+    border-color: #272d38 !important;
     box-shadow: var(--brl-shadow-inset) !important;
 }
 [data-testid="stSelectbox"] div:has(> input) {
@@ -656,8 +802,8 @@ input::placeholder, textarea::placeholder { color: #e4f3f2 !important; opacity: 
 }
 [data-testid="stBaseButton-secondary"], button[kind="secondary"] {
     color: var(--brl-text) !important;
-    border-color: rgba(180, 211, 205, 0.22) !important;
-    background: rgba(34, 57, 61, 0.72) !important;
+    border-color: #272d38 !important;
+    background: #171b24 !important;
     box-shadow: 0 8px 20px rgba(0, 0, 0, 0.2), inset 1px 1px 0 rgba(255, 255, 255, 0.05) !important;
 }
 [data-testid="stBaseButton-secondary"]:hover, button[kind="secondary"]:hover {
@@ -726,13 +872,45 @@ code { color: #c4e6df; background: rgba(53, 89, 89, 0.55); }
     color: var(--brl-text) !important;
     background: rgba(103, 152, 156, 0.12) !important;
 }
+[data-testid="stBaseButton-primary"], button[kind="primary"] {
+    color: #fff !important;
+    border-color: rgba(139, 124, 255, 0.5) !important;
+    background: #7564eb !important;
+    box-shadow: none !important;
+}
+[data-testid="stBaseButton-primary"]:hover, button[kind="primary"]:hover {
+    background: #8b7cff !important;
+}
+[data-testid="stMetric"],
+[data-testid="stVerticalBlockBorderWrapper"],
+[data-testid="stExpander"],
+[data-testid="stForm"] {
+    background: #171b24 !important;
+    border-color: #272d38 !important;
+    box-shadow: none !important;
+}
+.brl-public-nav {
+    display: flex;
+    justify-content: center;
+    gap: clamp(0.75rem, 2vw, 2rem);
+}
+.brl-public-nav a {
+    color: var(--brl-text-secondary) !important;
+    text-decoration: none !important;
+    font-size: 0.88rem;
+}
+.brl-public-nav a:hover { color: var(--brl-text) !important; }
+[data-testid="stAlertContainer"] {
+    background: #171b24 !important;
+    border-color: #272d38 !important;
+}
 </style>
 """
 
 
 def inject_styles() -> None:
     """Inject the shared visual system into the current Streamlit page."""
-    dark_mode = st.session_state.get("brl_dark_mode", False)
+    dark_mode = st.session_state.get("brl_dark_mode", True)
     st.markdown(
         BRAND_CSS + (DARK_MODE_CSS if dark_mode else ""),
         unsafe_allow_html=True,
@@ -754,9 +932,20 @@ def ai_disclosure() -> None:
 
 
 def demo_banner() -> None:
+    brand_id = st.session_state.get("active_brand_id")
+    if brand_id is None:
+        return
+    from db.connection import get_connection
+
+    with get_connection() as conn:
+        brand = conn.execute(
+            "SELECT slug FROM brands WHERE id = ?", (brand_id,)
+        ).fetchone()
+    if not brand or brand["slug"] != "demo-brand":
+        return
     st.markdown(
-        '<div class="demo-banner"><strong>Demo workspace</strong> · Simulated brands, products, '
-        'facts and role switching for evaluation.</div>',
+        '<div class="demo-banner"><strong>Demo workspace</strong> · Seeded sample brands, '
+        'products and evidence for authenticated workflow evaluation.</div>',
         unsafe_allow_html=True,
     )
 

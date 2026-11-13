@@ -13,16 +13,26 @@ import json
 import unicodedata
 
 from db.connection import get_connection
-from models.enums import ClaimDriftStatus, DraftStatus, FactApprovalStatus, ReviewEventType, UserRole
+from models.enums import BrandRole, ClaimDriftStatus, DraftStatus, FactApprovalStatus, ReviewEventType, UserRole
+from services.auth_service import (
+    AuthenticatedPrincipal,
+    require_legacy_test_actor,
+    require_principal,
+)
+from services.audit_service import append_audit_event
+from services.brand_service import require_record_brand
+from services.review_event_writer import append_review_event, simulated_role_context
 
 
 def _require_reviewer(actor_role: UserRole | str | None, action: str) -> None:
+    require_legacy_test_actor(action)
     role_value = actor_role.value if isinstance(actor_role, UserRole) else str(actor_role or "")
     if role_value.casefold() != UserRole.REVIEWER.value.casefold():
         raise PermissionError(f"Reviewer role required to {action}.")
 
 
 def _require_creator(actor_role: UserRole | str | None, action: str) -> None:
+    require_legacy_test_actor(action)
     role_value = actor_role.value if isinstance(actor_role, UserRole) else str(actor_role or "")
     if role_value.casefold() != UserRole.CREATOR.value.casefold():
         raise PermissionError(f"Creator role required to {action}.")
@@ -31,16 +41,29 @@ def _require_creator(actor_role: UserRole | str | None, action: str) -> None:
 def submit_draft_for_review(
     draft_id: int,
     draft_version_id: int,
-    submitted_by: str,
+    submitted_by: str | None = None,
     *,
     actor_role: UserRole | str | None = None,
+    principal: AuthenticatedPrincipal | None = None,
+    brand_id: int | None = None,
 ) -> int:
     """Atomically transition the latest checked version into the Reviewer queue."""
-    _require_creator(actor_role, "submit drafts for review")
+    actor = require_principal(principal, action="submit drafts for review") if principal else None
+    if principal is None:
+        _require_creator(actor_role, "submit drafts for review")
     with get_connection() as conn:
         conn.execute("BEGIN IMMEDIATE")
+        if actor is not None:
+            if brand_id is None:
+                raise ValueError("A brand is required to submit this draft.")
+            require_record_brand(
+                conn, actor, brand_id, "drafts", draft_id,
+                roles=(BrandRole.OWNER, BrandRole.CREATOR),
+            )
         draft = conn.execute(
-            "SELECT status FROM drafts WHERE id = ?", (draft_id,)
+            "SELECT status, submitted_by_user_id, brand_id FROM drafts WHERE id = ?"
+            + (" AND brand_id = ?" if brand_id is not None else ""),
+            (draft_id, brand_id) if brand_id is not None else (draft_id,),
         ).fetchone()
         latest = conn.execute(
             "SELECT id FROM draft_versions WHERE draft_id = ? "
@@ -49,26 +72,56 @@ def submit_draft_for_review(
         ).fetchone()
         if draft is None or latest is None:
             raise ValueError("Draft or draft version does not exist.")
+        if actor is not None and brand_id is None and draft["brand_id"] is not None:
+            raise PermissionError("A selected brand is required for this draft.")
         if draft["status"] not in {
             DraftStatus.CHECKED.value, DraftStatus.CHANGES_REQUESTED.value
         }:
             raise ValueError("Only a checked draft can be submitted for review.")
         if latest["id"] != draft_version_id:
             raise ValueError("Only the latest checked draft version can be submitted.")
+        if actor is not None and draft["submitted_by_user_id"] not in (None, actor.user_id):
+            raise PermissionError("Only the draft creator can submit this draft.")
         review = conn.execute(
             "SELECT id FROM reviews WHERE draft_id = ? ORDER BY id DESC LIMIT 1",
             (draft_id,),
         ).fetchone()
         if review is None:
             review_id = int(conn.execute(
-                "INSERT INTO reviews (draft_id) VALUES (?)", (draft_id,)
+                "INSERT INTO reviews (draft_id, reviewer_user_id) VALUES (?, NULL)",
+                (draft_id,),
             ).lastrowid)
         else:
             review_id = int(review["id"])
-        conn.execute(
-            "INSERT INTO review_events (review_id, event_type, actor) VALUES (?, 'SUBMITTED', ?)",
-            (review_id, submitted_by.strip() or "demo_creator"),
+        if actor is not None:
+            conn.execute(
+                "UPDATE drafts SET submitted_by_user_id = ?, submitted_by = ? "
+                "WHERE id = ? AND submitted_by_user_id IS NULL",
+                (actor.user_id, actor.username, draft_id),
+            )
+        role_at_event, provenance = (
+            (actor.role.value if hasattr(actor.role, "value") else str(actor.role), "AUTHENTICATED")
+            if actor is not None
+            else simulated_role_context(actor_role)
         )
+        append_review_event(
+            conn,
+            review_id=review_id,
+            event_type="SUBMITTED",
+            actor=actor.username if actor else (submitted_by or "").strip() or "demo_creator",
+            actor_role_at_event=role_at_event,
+            actor_role_provenance=provenance,
+        )
+        if actor is not None:
+            append_audit_event(
+                conn,
+                actor,
+                action="REVIEW_SUBMITTED",
+                object_type="draft",
+                object_id=draft_id,
+                brand_id=brand_id,
+                details={"version_id": draft_version_id},
+            )
         conn.execute(
             "UPDATE drafts SET status = 'READY_FOR_REVIEW', "
             "updated_at = strftime('%Y-%m-%dT%H:%M:%SZ','now') WHERE id = ?",
@@ -82,18 +135,31 @@ def request_draft_changes(
     draft_id: int,
     draft_version_id: int,
     note: str,
-    reviewer: str,
+    reviewer: str | None = None,
     *,
     actor_role: UserRole | str | None = None,
+    principal: AuthenticatedPrincipal | None = None,
+    brand_id: int | None = None,
 ) -> None:
     """Atomically record a Reviewer change request for the latest submitted version."""
-    _require_reviewer(actor_role, "request changes to drafts")
+    actor = require_principal(principal, action="request changes to drafts") if principal else None
+    if principal is None:
+        _require_reviewer(actor_role, "request changes to drafts")
     if not note.strip():
         raise ValueError("Provide a note explaining the requested changes.")
     with get_connection() as conn:
         conn.execute("BEGIN IMMEDIATE")
+        if actor is not None:
+            if brand_id is None:
+                raise ValueError("A brand is required to review this draft.")
+            require_record_brand(
+                conn, actor, brand_id, "drafts", draft_id,
+                roles=(BrandRole.OWNER, BrandRole.REVIEWER),
+            )
         draft = conn.execute(
-            "SELECT status FROM drafts WHERE id = ?", (draft_id,)
+            "SELECT status, brand_id FROM drafts WHERE id = ?"
+            + (" AND brand_id = ?" if brand_id is not None else ""),
+            (draft_id, brand_id) if brand_id is not None else (draft_id,),
         ).fetchone()
         latest = conn.execute(
             "SELECT id FROM draft_versions WHERE draft_id = ? "
@@ -102,6 +168,8 @@ def request_draft_changes(
         ).fetchone()
         if draft is None or draft["status"] != DraftStatus.READY_FOR_REVIEW.value:
             raise ValueError("Only a submitted draft can receive a change request.")
+        if actor is not None and brand_id is None and draft["brand_id"] is not None:
+            raise PermissionError("A selected brand is required for this draft.")
         if latest is None or latest["id"] != draft_version_id:
             raise ValueError("Only the latest submitted draft version can receive a decision.")
         review = conn.execute(
@@ -110,11 +178,30 @@ def request_draft_changes(
         ).fetchone()
         if review is None:
             raise ValueError("Submitted draft has no review record.")
-        conn.execute(
-            "INSERT INTO review_events (review_id, event_type, actor, note) "
-            "VALUES (?, 'CHANGES_REQUESTED', ?, ?)",
-            (review["id"], reviewer.strip() or "demo_reviewer", note.strip()),
+        role_at_event, provenance = (
+            (actor.role.value if hasattr(actor.role, "value") else str(actor.role), "AUTHENTICATED")
+            if actor is not None
+            else simulated_role_context(actor_role)
         )
+        append_review_event(
+            conn,
+            review_id=review["id"],
+            event_type="CHANGES_REQUESTED",
+            actor=actor.username if actor else (reviewer or "").strip() or "demo_reviewer",
+            note=note.strip(),
+            actor_role_at_event=role_at_event,
+            actor_role_provenance=provenance,
+        )
+        if actor is not None:
+            append_audit_event(
+                conn,
+                actor,
+                action="REVIEW_CHANGES_REQUESTED",
+                object_type="draft",
+                object_id=draft_id,
+                brand_id=brand_id,
+                details={"version_id": draft_version_id},
+            )
         conn.execute(
             "UPDATE reviews SET status = 'CHANGES_REQUESTED', reviewer_note = ?, "
             "updated_at = strftime('%Y-%m-%dT%H:%M:%SZ','now') WHERE id = ?",
@@ -154,6 +241,7 @@ def mint_approved_claim(
     approved_by: str = "demo_reviewer",
     *,
     actor_role: UserRole | str | None = None,
+    principal: AuthenticatedPrincipal | None = None,
 ) -> str:
     """
     Mint a stable claim ID, persist the approved claim, and link fact versions.
@@ -168,7 +256,17 @@ def mint_approved_claim(
 
     Returns the stable_claim_id string.
     """
-    _require_reviewer(actor_role, "mint approved claims")
+    actor = (
+        require_principal(
+            principal, roles=(UserRole.REVIEWER,), action="mint approved claims"
+        )
+        if principal is not None
+        else None
+    )
+    if principal is None:
+        _require_reviewer(actor_role, "mint approved claims")
+    if actor is not None:
+        approved_by = actor.username
     if fact_version_ids is None:
         fact_version_ids = []
 
@@ -308,21 +406,49 @@ def approve_submitted_draft(
     approved_by: str = "demo_reviewer",
     *,
     actor_role: UserRole | str | None = None,
+    principal: AuthenticatedPrincipal | None = None,
+    brand_id: int | None = None,
 ) -> int:
     """Atomically approve a submitted version and create all claims and lineage snapshots."""
-    _require_reviewer(actor_role, "approve submitted drafts")
+    actor = require_principal(principal, action="approve submitted drafts") if principal else None
+    if principal is None:
+        _require_reviewer(actor_role, "approve submitted drafts")
     with get_connection() as conn:
+        # Serialize the status check and approval writes so concurrent review
+        # submissions cannot both mint claims for the same draft version.
+        conn.execute("BEGIN IMMEDIATE")
+        if actor is not None:
+            if brand_id is None:
+                raise ValueError("A brand is required to approve this draft.")
+            require_record_brand(
+                conn, actor, brand_id, "drafts", draft_id,
+                roles=(BrandRole.OWNER, BrandRole.REVIEWER),
+            )
         draft = conn.execute(
-            "SELECT status FROM drafts WHERE id = ?", (draft_id,)
+            "SELECT status, submitted_by, submitted_by_user_id, brand_id FROM drafts WHERE id = ?"
+            + (" AND brand_id = ?" if brand_id is not None else ""),
+            (draft_id, brand_id) if brand_id is not None else (draft_id,),
         ).fetchone()
         if draft is None or draft["status"] != "READY_FOR_REVIEW":
             raise ValueError("Only a draft submitted as READY_FOR_REVIEW can be approved.")
+        if actor is not None and brand_id is None and draft["brand_id"] is not None:
+            raise PermissionError("A selected brand is required for this draft.")
         latest_version = conn.execute(
             "SELECT id FROM draft_versions WHERE draft_id = ? ORDER BY version_number DESC LIMIT 1",
             (draft_id,),
         ).fetchone()
         if latest_version is None or latest_version["id"] != draft_version_id:
             raise ValueError("Only the latest submitted draft version can be approved.")
+        if actor is not None and (
+            draft["submitted_by_user_id"] == actor.user_id
+            or (
+                draft["submitted_by_user_id"] is None
+                and draft["submitted_by"].strip().casefold() == actor.username.casefold()
+            )
+        ):
+            raise PermissionError("A creator cannot approve their own submission.")
+        if actor is not None:
+            approved_by = actor.username
 
         blockers = conn.execute(
             """
@@ -389,17 +515,44 @@ def approve_submitted_draft(
                 [row["fact_version_id"] for row in links], approved_by,
             )
 
-        conn.execute(
-            "INSERT INTO review_events (review_id, event_type, actor, note) VALUES (?, 'APPROVED', ?, ?)",
-            (review["id"], approved_by, reviewer_note),
+        role_at_event, provenance = (
+            (actor.role.value if hasattr(actor.role, "value") else str(actor.role), "AUTHENTICATED")
+            if actor is not None
+            else simulated_role_context(actor_role)
         )
+        append_review_event(
+            conn,
+            review_id=review["id"],
+            event_type="APPROVED",
+            actor=approved_by,
+            note=reviewer_note,
+            actor_role_at_event=role_at_event,
+            actor_role_provenance=provenance,
+        )
+        if actor is not None:
+            append_audit_event(
+                conn,
+                actor,
+                action="DRAFT_APPROVED",
+                object_type="draft",
+                object_id=draft_id,
+                brand_id=brand_id,
+                details={"version_id": draft_version_id},
+            )
         conn.execute(
             """
             UPDATE reviews SET status = 'APPROVED', reviewer_note = ?,
+                reviewer = COALESCE(?, reviewer),
+                reviewer_user_id = COALESCE(?, reviewer_user_id),
                 updated_at = strftime('%Y-%m-%dT%H:%M:%SZ','now')
             WHERE id = ?
             """,
-            (reviewer_note, review["id"]),
+            (
+                reviewer_note,
+                actor.username if actor is not None else None,
+                actor.user_id if actor is not None else None,
+                review["id"],
+            ),
         )
         conn.execute(
             """
@@ -413,8 +566,15 @@ def approve_submitted_draft(
         return len(claims)
 
 
-def get_approved_claims(drift_status: str | None = None) -> list[dict]:
+def get_approved_claims(
+    drift_status: str | None = None,
+    *,
+    principal: AuthenticatedPrincipal | None = None,
+    brand_id: int | None = None,
+) -> list[dict]:
     """Return approved claims, optionally filtered by drift status."""
+    if principal is None:
+        require_legacy_test_actor("read unscoped approved claims")
     query = """
         SELECT ac.*,
                d.title AS draft_title,
@@ -425,8 +585,17 @@ def get_approved_claims(drift_status: str | None = None) -> list[dict]:
         LEFT JOIN products p ON p.id = d.product_id
     """
     params: list = []
+    if principal is not None:
+        if brand_id is None:
+            raise ValueError("A brand is required for authenticated claim lookup.")
+        from services.brand_service import require_brand_membership
+
+        require_brand_membership(principal, brand_id)
+        query += " WHERE d.brand_id = ?"
+        params.append(brand_id)
     if drift_status:
-        query += " WHERE ac.drift_status = ?"
+        query += " AND " if " WHERE " in query else " WHERE "
+        query += "ac.drift_status = ?"
         params.append(drift_status)
     query += " ORDER BY ac.approved_at DESC"
 
@@ -434,9 +603,18 @@ def get_approved_claims(drift_status: str | None = None) -> list[dict]:
         return [dict(r) for r in conn.execute(query, params).fetchall()]
 
 
-def get_claim_fact_links(approved_claim_id: int) -> list[dict]:
+def get_claim_fact_links(
+    approved_claim_id: int,
+    *,
+    principal: AuthenticatedPrincipal | None = None,
+    brand_id: int | None = None,
+) -> list[dict]:
     """Return fact versions from the current immutable approval snapshot."""
+    if principal is None:
+        require_legacy_test_actor("read unscoped claim evidence")
     with get_connection() as conn:
+        if principal is not None:
+            _require_claim_brand(conn, principal, brand_id, approved_claim_id)
         rows = conn.execute(
             """
             SELECT sfl.fact_version_id, sfl.snapshot_id, fv.statement,
@@ -454,9 +632,18 @@ def get_claim_fact_links(approved_claim_id: int) -> list[dict]:
         return [dict(r) for r in rows]
 
 
-def get_claim_approval_snapshots(approved_claim_id: int) -> list[dict]:
+def get_claim_approval_snapshots(
+    approved_claim_id: int,
+    *,
+    principal: AuthenticatedPrincipal | None = None,
+    brand_id: int | None = None,
+) -> list[dict]:
     """Return all immutable approval snapshots, newest first."""
+    if principal is None:
+        require_legacy_test_actor("read unscoped claim snapshots")
     with get_connection() as conn:
+        if principal is not None:
+            _require_claim_brand(conn, principal, brand_id, approved_claim_id)
         rows = conn.execute(
             """
             SELECT s.*, p.name AS product_name
@@ -470,9 +657,34 @@ def get_claim_approval_snapshots(approved_claim_id: int) -> list[dict]:
         return [dict(row) for row in rows]
 
 
-def get_snapshot_fact_links(snapshot_id: int) -> list[dict]:
+def get_snapshot_fact_links(
+    snapshot_id: int,
+    *,
+    principal: AuthenticatedPrincipal | None = None,
+    brand_id: int | None = None,
+) -> list[dict]:
     """Return the exact evidence versions recorded in one approval snapshot."""
+    if principal is None:
+        require_legacy_test_actor("read unscoped snapshot evidence")
     with get_connection() as conn:
+        if principal is not None:
+            if brand_id is None:
+                raise ValueError("A brand is required for authenticated snapshot lookup.")
+            from services.brand_service import require_brand_membership
+
+            require_brand_membership(principal, brand_id)
+            allowed = conn.execute(
+                """
+                SELECT 1 FROM approved_claim_snapshots s
+                JOIN approved_claims ac ON ac.id = s.approved_claim_id
+                JOIN drafts d ON d.id = ac.draft_id
+                WHERE s.id = ? AND d.brand_id = ?
+                """, (snapshot_id, brand_id)
+            ).fetchone()
+            if allowed is None:
+                from services.brand_service import BrandAccessError
+
+                raise BrandAccessError("That snapshot is not part of the selected brand.")
         rows = conn.execute(
             """
             SELECT sfl.fact_version_id, fv.version_number, fv.statement,
@@ -486,3 +698,19 @@ def get_snapshot_fact_links(snapshot_id: int) -> list[dict]:
             (snapshot_id,),
         ).fetchall()
         return [dict(row) for row in rows]
+
+
+def _require_claim_brand(conn, principal, brand_id, approved_claim_id) -> None:
+    if brand_id is None:
+        raise ValueError("A brand is required for authenticated claim lookup.")
+    from services.brand_service import BrandAccessError, require_brand_membership
+
+    require_brand_membership(principal, brand_id)
+    allowed = conn.execute(
+        """
+        SELECT 1 FROM approved_claims ac JOIN drafts d ON d.id = ac.draft_id
+        WHERE ac.id = ? AND d.brand_id = ?
+        """, (approved_claim_id, brand_id)
+    ).fetchone()
+    if allowed is None:
+        raise BrandAccessError("That claim is not part of the selected brand.")

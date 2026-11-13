@@ -12,6 +12,7 @@ via progressive disclosure expanders.
 from __future__ import annotations
 
 import html
+import json
 import logging
 import re
 import streamlit as st
@@ -39,7 +40,9 @@ from ui.styles import (
 from ui.presentation import humanize, explain_status
 from ui.components import page_header
 from db.connection import get_connection
-from models.enums import FindingStatus, DraftStatus, UserRole, FindingResult, Severity
+from models.enums import FindingStatus, DraftStatus, UserRole, FindingResult, Severity, BrandRole
+from services.auth_service import AuthenticatedPrincipal
+from services.brand_service import require_brand_membership
 
 logger = logging.getLogger("brand_rule_lab.ui.review_results")
 
@@ -55,6 +58,73 @@ def _get_open_high_impact(findings: list[dict]) -> list[dict]:
             and f.get("override_decision") == "ACCEPT"
         )
     ]
+
+
+def _get_approval_blockers(findings: list[dict]) -> dict[str, int]:
+    """Summarise the checks that prevent or condition reviewer approval."""
+    open_high = _get_open_high_impact(findings)
+    missing_evidence = [
+        finding
+        for finding in findings
+        if finding.get("finding_type") == "fact_match"
+        and (
+            finding.get("evidence_relationship") != "SUPPORTS"
+            or not finding.get("fact_version_id")
+        )
+    ]
+    not_observed = [
+        finding
+        for finding in findings
+        if finding.get("result") == "NOT_OBSERVED"
+    ]
+    errors = [
+        finding
+        for finding in findings
+        if finding.get("result") == "ERROR"
+    ]
+    return {
+        "high_priority": len(open_high),
+        "missing_evidence": len(missing_evidence),
+        "not_observed": len(not_observed),
+        "errors": len(errors),
+    }
+
+
+def _highlighted_copy_html(raw_text: str, findings: list[dict]) -> str:
+    """Highlight only claim spans whose stored offsets match the exact source text."""
+    spans = set()
+    for finding in findings:
+        start = finding.get("claim_start_char")
+        end = finding.get("claim_end_char")
+        claim = finding.get("claim_text")
+        if (
+            isinstance(start, int)
+            and not isinstance(start, bool)
+            and isinstance(end, int)
+            and not isinstance(end, bool)
+            and isinstance(claim, str)
+            and 0 <= start < end <= len(raw_text)
+            and raw_text[start:end] == claim
+        ):
+            spans.add((start, end))
+
+    safe_text = html.escape(raw_text)
+    if not spans:
+        return safe_text
+
+    output = []
+    cursor = 0
+    for start, end in sorted(spans):
+        if start < cursor:
+            continue
+        output.append(html.escape(raw_text[cursor:start]))
+        output.append(
+            '<mark class="brl-copy-highlight" aria-label="Text referenced by a finding">'
+            f"{html.escape(raw_text[start:end])}</mark>"
+        )
+        cursor = end
+    output.append(html.escape(raw_text[cursor:]))
+    return "".join(output)
 
 
 def _derive_issue_title(quoted: str, rule_name: str | None, finding_type: str, evidence_rel: str | None) -> str:
@@ -80,6 +150,8 @@ def _derive_issue_title(quoted: str, rule_name: str | None, finding_type: str, e
         return "Image description needs checking"
     if finding_type == "asset_identity":
         return "Approved image comparison"
+    if finding_type == "packaging_reference_text":
+        return "Packaging copy vs approved artwork"
     if finding_type == "campaign_alignment":
         return "Campaign message check not completed"
     if finding_type == "document_ocr":
@@ -175,13 +247,20 @@ def _group_related_findings(findings: list[dict]) -> list[dict]:
     return ordered_groups
 
 
-def render(role: UserRole | None = None):
+def render(
+    principal: AuthenticatedPrincipal,
+    role: UserRole | str | None = None,
+):
     inject_styles()
     page_header("Content Review", "Compliance Review Results")
-    is_reviewer = role == UserRole.REVIEWER
-    is_creator = role == UserRole.CREATOR
+    brand_id = st.session_state.get("active_brand_id")
+    membership = require_brand_membership(principal, brand_id)
+    role = membership["role"]
+    is_reviewer = role in {BrandRole.OWNER.value, BrandRole.REVIEWER.value}
+    is_creator = role in {BrandRole.OWNER.value, BrandRole.CREATOR.value}
     demo_banner()
-    ai_disclosure()
+    with st.expander("AI and data use", expanded=False):
+        ai_disclosure()
     review_notice = st.session_state.pop("review_notice", None)
     if review_notice:
         st.warning(review_notice)
@@ -191,7 +270,7 @@ def render(role: UserRole | None = None):
             st.code(review_notice_details)
 
     # Draft selector
-    drafts = get_all_drafts()
+    drafts = get_all_drafts(principal=principal, brand_id=brand_id)
     if not drafts:
         st.info("No drafts yet. Submit one via **New Review**.")
         return
@@ -217,7 +296,7 @@ def render(role: UserRole | None = None):
     )
     draft_id = draft_options[selected_draft_label]
 
-    draft_data = get_draft_with_versions(draft_id)
+    draft_data = get_draft_with_versions(draft_id, principal=principal, brand_id=brand_id)
     if not draft_data or not draft_data.get("versions"):
         st.info("This draft has not been checked yet. Run **New Review** first.")
         return
@@ -253,27 +332,26 @@ def render(role: UserRole | None = None):
     current_version = version_by_label[selected_version_label]
     draft_version_id = current_version["id"]
     is_latest = (current_version["id"] == latest_version["id"])
+    try:
+        version_visual_metadata = json.loads(current_version.get("visual_metadata") or "{}")
+    except (TypeError, json.JSONDecodeError):
+        version_visual_metadata = {}
+    video_frame_lookup = {
+        frame.get("frame_number"): frame.get("timestamp")
+        for frame in version_visual_metadata.get("video_frames", [])
+        if isinstance(frame, dict)
+    }
 
     with col_info:
-        badge = "🟢 Latest Active Version" if is_latest else "📜 Historical Revision"
+        badge = "Latest active version" if is_latest else "Historical revision"
         st.markdown(f"**{badge}**")
         st.caption(
             f"Viewing version **v{current_version['version_number']}** of {total_versions} | "
             f"Status: **{humanize(draft_data['status'])}**"
         )
 
-    # Content preview
-    with st.expander(f"👁️ View Draft Copy (Version {current_version['version_number']})", expanded=False):
-        st.text_area(
-            f"Draft copy (v{current_version['version_number']})",
-            value=current_version["raw_text"],
-            height=90,
-            disabled=True,
-            key=f"raw_text_{draft_version_id}",
-        )
-
     if total_versions > 1:
-        with st.expander("🔄 Compare Revisions", expanded=False):
+        with st.expander("Compare revisions", expanded=False):
             v_map = {f"Version {v['version_number']}": v for v in versions}
             diff_col1, diff_col2 = st.columns(2)
             with diff_col1:
@@ -294,7 +372,21 @@ def render(role: UserRole | None = None):
                     st.markdown(f"**{v2_key}**")
                     st.code(t2, language=None)
 
-    findings = get_findings_for_draft_version(draft_version_id)
+    findings = get_findings_for_draft_version(
+        draft_version_id, principal=principal, brand_id=brand_id
+    )
+    with st.container(border=True):
+        st.markdown(f"**Submitted copy · version {current_version['version_number']}**")
+        st.caption(
+            "Highlighted text has an exact, verified source position for a finding. "
+            "Other findings still show their quoted text below."
+        )
+        st.markdown(
+            '<div class="brl-copy-preview">'
+            + _highlighted_copy_html(current_version["raw_text"], findings)
+            + "</div>",
+            unsafe_allow_html=True,
+        )
 
     if not findings:
         if draft_data["status"] in (DraftStatus.DRAFT.value, "AWAITING_RECHECK"):
@@ -333,9 +425,10 @@ def render(role: UserRole | None = None):
             st.success("All completed checks meet the applicable guidelines.")
 
         # Metric cards with plain-English labels
-        m1, m2, m3, m4 = st.columns(4)
+        m1, m2 = st.columns(2)
         m1.metric("Looks good", n_pass)
         m2.metric("Needs a change", n_fail)
+        m3, m4 = st.columns(2)
         m3.metric("Needs human review", n_review)
         m4.metric("Not checked", n_not_observed, help="An unchecked item is not a pass.")
 
@@ -355,22 +448,22 @@ def render(role: UserRole | None = None):
             sev_badge = SEVERITY_BADGE.get(top_sev, "")
 
             if g["awaiting_override"]:
-                status_icon = "⏳ Dismissed — awaiting Reviewer decision (not resolved)"
+                status_icon = "Dismissed — awaiting Reviewer decision (not resolved)"
             elif any(
                 finding.get("override_decision") == "ACCEPT"
                 for finding in g["findings"]
             ):
-                status_icon = "✅ Reviewer accepted dismissal"
+                status_icon = "Reviewer accepted dismissal"
             elif any(
                 finding.get("override_decision") == "REJECT"
                 for finding in g["findings"]
             ):
-                status_icon = "🔓 Reviewer rejected dismissal — still blocking"
+                status_icon = "Reviewer rejected dismissal — still blocking"
             else:
-                status_icon = "🔓 Needs Attention" if is_open else "✅ Resolved"
+                status_icon = "Needs attention" if is_open else "Resolved"
 
             with st.expander(
-                f"{'⚠️' if top_res == 'FAIL' else 'ℹ️'} {g['title']} — {humanize(top_sev)}",
+                f"{g['title']} — {humanize(top_sev)}",
                 expanded=is_open and (top_res in ("FAIL", "REVIEW_REQUIRED")),
             ):
                 # Header Badges
@@ -384,7 +477,7 @@ def render(role: UserRole | None = None):
                 if g["quoted_text"]:
                     st.markdown("**What we detected:**")
                     st.markdown(
-                        f'<div class="quote-box">"{html.escape(g["quoted_text"])}</div>',
+                        f'<div class="quote-box">"{html.escape(g["quoted_text"])}"</div>',
                         unsafe_allow_html=True,
                     )
 
@@ -397,6 +490,40 @@ def render(role: UserRole | None = None):
                     if expl and expl not in main_explanation:
                         main_explanation += f"{expl}\n\n"
                 st.markdown(main_explanation.strip())
+
+                evidence_sources = []
+                seen_evidence = set()
+                for sf in g["findings"]:
+                    statement = str(sf.get("fact_statement") or "").strip()
+                    evidence_ref = str(sf.get("fact_evidence_ref") or "").strip()
+                    fact_version = sf.get("fact_version_id")
+                    evidence_key = (fact_version, statement, evidence_ref)
+                    if statement and evidence_key not in seen_evidence:
+                        seen_evidence.add(evidence_key)
+                        evidence_sources.append((sf, statement, evidence_ref))
+                if evidence_sources:
+                    st.markdown("**Approved source considered:**")
+                    for sf, statement, evidence_ref in evidence_sources:
+                        relationship = sf.get("evidence_relationship")
+                        relationship_label = {
+                            "SUPPORTS": "Linked as supporting evidence",
+                            "CONTRADICTS": "Conflicts with this approved fact",
+                            "RELATED_NOT_EVIDENCE": "Related, but not evidence for this claim",
+                            "NO_MATCH": "No evidence match",
+                            "UNLINKED": "No approved fact linked",
+                        }.get(relationship, "Evidence relationship requires review")
+                        source_html = (
+                            '<div class="evidence-callout">'
+                            f"<strong>{html.escape(relationship_label)}</strong><br>"
+                            f"{html.escape(statement)}"
+                        )
+                        if evidence_ref:
+                            source_html += (
+                                "<br><small>Source reference: "
+                                f"{html.escape(evidence_ref)}</small>"
+                            )
+                        source_html += "</div>"
+                        st.markdown(source_html, unsafe_allow_html=True)
 
                 # Next steps & Suggested correction
                 corr_text = g.get("suggested_correction")
@@ -437,37 +564,41 @@ def render(role: UserRole | None = None):
                                 f"by {dismissed.get('override_reviewer')}: "
                                 f"{dismissed.get('override_reason')}"
                             )
-                        with st.form(f"override_finding_{dismissed['id']}"):
-                            st.markdown(
-                                f"**Reviewer decision for dismissed HIGH/CRITICAL finding #{dismissed['id']}**"
-                            )
-                            override_decision = st.radio(
-                                "Decision",
-                                ["REJECT", "ACCEPT"],
-                                format_func=lambda value: (
-                                    "Reject dismissal — keep blocking"
-                                    if value == "REJECT"
-                                    else "Accept dismissal — resolve this non-evidence issue"
-                                ),
-                                key=f"override_choice_{dismissed['id']}",
-                            )
-                            override_reason = st.text_area(
-                                "Reviewer reason (required)",
-                                key=f"override_reason_{dismissed['id']}",
-                            )
-                            if st.form_submit_button("Record Reviewer decision"):
-                                try:
-                                    record_finding_override(
-                                        dismissed["id"],
-                                        override_decision,
-                                        override_reason,
-                                        reviewer="demo_reviewer",
-                                    )
-                                except ValueError as exc:
-                                    st.error(str(exc))
-                                else:
-                                    st.success("Reviewer decision recorded in the audit trail.")
-                                    st.rerun()
+                        if is_reviewer:
+                            with st.form(f"override_finding_{dismissed['id']}"):
+                                st.markdown(
+                                    f"**Reviewer decision for dismissed HIGH/CRITICAL finding #{dismissed['id']}**"
+                                )
+                                override_decision = st.radio(
+                                    "Decision",
+                                    ["REJECT", "ACCEPT"],
+                                    format_func=lambda value: (
+                                        "Reject dismissal — keep blocking"
+                                        if value == "REJECT"
+                                        else "Accept dismissal — resolve this non-evidence issue"
+                                    ),
+                                    key=f"override_choice_{dismissed['id']}",
+                                )
+                                override_reason = st.text_area(
+                                    "Reviewer reason (required)",
+                                    key=f"override_reason_{dismissed['id']}",
+                                )
+                                if st.form_submit_button("Record Reviewer decision"):
+                                    try:
+                                        record_finding_override(
+                                            dismissed["id"],
+                                            override_decision,
+                                            override_reason,
+                                            principal=principal,
+                                            brand_id=brand_id,
+                                        )
+                                    except (PermissionError, ValueError) as exc:
+                                        st.error(str(exc))
+                                    else:
+                                        st.success("Reviewer decision recorded in the audit trail.")
+                                        st.rerun()
+                        else:
+                            st.caption("Only a Reviewer or Brand Owner can decide this dismissal.")
 
                 # Progressive disclosure: Technical details
                 with st.expander("Technical details", expanded=False):
@@ -498,8 +629,16 @@ def render(role: UserRole | None = None):
                                 f"{sf.get('claim_start_char', 'N/A')}–{sf.get('claim_end_char', 'N/A')}"
                             )
                         if sf.get("source_page") is not None:
+                            if current_version.get("source_type") == "video":
+                                frame_number = sf["source_page"]
+                                timestamp = video_frame_lookup.get(frame_number)
+                                location = f"Source frame: {frame_number}"
+                                if timestamp:
+                                    location += f" at {timestamp}"
+                            else:
+                                location = f"Source page: {sf['source_page']}"
                             st.caption(
-                                f"Source page: {sf['source_page']} · Character span: "
+                                f"{location} · Character span: "
                                 f"{sf.get('start_char', 'N/A')}–{sf.get('end_char', 'N/A')}"
                             )
                         if sf.get("explanation"):
@@ -515,12 +654,12 @@ def render(role: UserRole | None = None):
                 # -------------------------------------------------------------
                 if not is_latest:
                     st.caption(
-                        f"ℹ️ Viewing historical revision (v{current_version['version_number']}). "
+                        f"Viewing historical revision (v{current_version['version_number']}). "
                         f"Select latest version (v{latest_version['version_number']}) to apply edits."
                     )
                 elif is_open and is_creator:
                     st.markdown("---")
-                    st.markdown("**Take Action on This Issue:**")
+                    st.markdown("**Take action on this issue**")
 
                     primary_fid = g["primary_id"]
                     target_span = g["quoted_text"].strip()
@@ -562,7 +701,7 @@ def render(role: UserRole | None = None):
                         )
 
                     edit_note = st.text_input(
-                        "Revision note (optional)",
+                        "Reason for correction (required)",
                         value=f"Correction for: {g['title']}",
                         key=f"edit_note_{g['key']}",
                     )
@@ -618,6 +757,7 @@ def render(role: UserRole | None = None):
                         type="primary",
                         key=f"apply_correction_{g['key']}",
                         disabled=bool(preview_error)
+                        or not edit_note.strip()
                         or (correction_mode == "Replace highlighted phrase" and not span_in_current)
                         or (correction_mode == "Replace highlighted phrase" and not phrase_replacement.strip())
                         or (correction_mode == "Replace entire draft" and not full_draft_replacement.strip()),
@@ -641,11 +781,15 @@ def render(role: UserRole | None = None):
                                     suggested_correction=used_corr,
                                     auto_rereview=True,
                                     ai_consent=correction_ai_consent,
-                                    actor_role=role,
+                                    principal=principal,
+                                    brand_id=brand_id,
                                 )
                                 for sf in g["findings"]:
                                     if sf["id"] != primary_fid:
-                                        update_finding_status(sf["id"], FindingStatus.ACCEPTED.value)
+                                        update_finding_status(
+                                            sf["id"], FindingStatus.ACCEPTED.value,
+                                            principal=principal, brand_id=brand_id,
+                                        )
                                 st.session_state["v_select_override"] = new_vid
                                 st.success(
                                     f"Revision v{total_versions + 1} saved and checked. "
@@ -658,7 +802,9 @@ def render(role: UserRole | None = None):
                                     "Could not complete the Creator correction workflow (%s).",
                                     clean_error,
                                 )
-                                updated_draft = get_draft_with_versions(draft_id)
+                                updated_draft = get_draft_with_versions(
+                                    draft_id, principal=principal, brand_id=brand_id
+                                )
                                 updated_versions = updated_draft.get("versions", []) if updated_draft else []
                                 if len(updated_versions) > total_versions:
                                     pending_version = updated_versions[-1]
@@ -685,6 +831,7 @@ def render(role: UserRole | None = None):
                                             sf["id"],
                                             FindingStatus.DISMISSED.value,
                                             creator_note=dismiss_reason.strip(),
+                                            principal=principal, brand_id=brand_id,
                                         )
                                     st.info("Finding dismissed.")
                                     st.rerun()
@@ -699,7 +846,8 @@ def render(role: UserRole | None = None):
                             if st.form_submit_button("Escalate clarification request"):
                                 try:
                                     request_guideline_clarification(
-                                        draft_id, primary_fid, clarification_note
+                                        draft_id, primary_fid, clarification_note,
+                                        principal=principal, brand_id=brand_id,
                                     )
                                 except ValueError as exc:
                                     st.error(str(exc))
@@ -707,21 +855,21 @@ def render(role: UserRole | None = None):
                                     st.success("Clarification request added to the review audit trail.")
                                     st.rerun()
                 elif is_open:
-                    st.info("Creator correction, dismissal, and escalation controls are available in the simulated Creator role.")
+                    st.info("Creator correction, dismissal, and escalation controls are available only to authenticated Creators.")
 
     st.markdown("---")
 
     # If viewing historical revision, governance decisions are disabled
     if not is_latest:
         st.info(
-            f"ℹ️ You are viewing historical revision **v{current_version['version_number']}**. "
+            f"You are viewing historical revision **v{current_version['version_number']}**. "
             f"Approval decisions apply only to the latest active version (**v{latest_version['version_number']}**)."
         )
         return
 
     # Option to manually trigger compliance re-check if draft is DRAFT or AWAITING_RECHECK
     if draft_data["status"] in (DraftStatus.DRAFT.value, "AWAITING_RECHECK"):
-        st.warning("⚠️ This draft version has edits pending compliance recheck.")
+        st.warning("This draft version has edits pending compliance recheck.")
         recheck_consent_nonce = st.session_state.get(
             f"_recheck_ai_consent_nonce_{draft_id}", 0
         )
@@ -742,7 +890,7 @@ def render(role: UserRole | None = None):
             st.caption(
                 "Without consent, only deterministic checks run; AI-only assessments are NOT_OBSERVED."
             )
-        if st.button("🔄 Execute Brand Compliance Check on Latest Revision"):
+        if st.button("Re-run brand check on latest revision", type="primary"):
             st.session_state[f"_recheck_ai_consent_nonce_{draft_id}"] = (
                 recheck_consent_nonce + 1
             )
@@ -773,6 +921,8 @@ def render(role: UserRole | None = None):
                         ai_provider=ai,
                         draft_version_id=latest_version["id"],
                         ai_consent=recheck_ai_consent,
+                        principal=principal,
+                        brand_id=brand_id,
                     )
                 except Exception as exc:
                     clean_error = safe_error_summary(exc)
@@ -790,14 +940,15 @@ def render(role: UserRole | None = None):
 
     # ---- Reviewer Decision section — visible and actionable only to Reviewers ----
     if is_reviewer:
-        st.subheader("✅ Reviewer Governance Decision")
+        st.subheader("Reviewer decision")
     else:
-        st.subheader("📋 Governance Status")
+        st.subheader("Governance status")
         st.info(
-            "ℹ️ **Reviewer actions** (approve, request changes, post audit comments) "
-            "are active when switching to the **Reviewer** simulated role in the sidebar."
+            "**Reviewer actions** (approve, request changes, and audit comments) "
+            "are available only to authenticated Reviewers."
         )
 
+    approval_blockers = _get_approval_blockers(findings)
     open_high = _get_open_high_impact(findings)
     unlinked_claims = [
         finding
@@ -811,18 +962,39 @@ def render(role: UserRole | None = None):
 
     if is_reviewer and open_high:
         st.error(
-            f"⚠️ {len(open_high)} unresolved high-priority issue(s) remain. "
-            "Resolve or address them before approving."
+            f"Approval blocked: {len(open_high)} unresolved high-priority issue(s) remain. "
+            "Resolve them before approving."
         )
     if is_reviewer and unlinked_claims:
         st.error(
-            f"{len(unlinked_claims)} claim(s) do not have directly supporting approved evidence. "
-            "They cannot be approved into the claim ledger until the evidence is linked and re-checked."
+            f"Approval blocked: {len(unlinked_claims)} claim(s) lack directly supporting "
+            "approved evidence. Link evidence and re-check before approving."
         )
+    if is_reviewer and approval_blockers["errors"]:
+        st.error(
+            f"Approval blocked: {approval_blockers['errors']} check(s) returned errors. "
+            "Re-run the review and resolve the failed checks before approving."
+        )
+    if is_reviewer and not open_high and not unlinked_claims and not approval_blockers["errors"]:
+        if not is_latest:
+            st.info("Reviewer approval is available only for the latest draft revision.")
+        elif draft_data["status"] != DraftStatus.READY_FOR_REVIEW.value:
+            st.info(
+                "Reviewer approval is available after the latest checked revision "
+                "has been submitted for review."
+            )
+        elif approval_blockers["not_observed"]:
+            st.warning(
+                f"Approval pending acknowledgement: {approval_blockers['not_observed']} "
+                "check(s) are NOT_OBSERVED. Review the findings and acknowledge them "
+                "in the approval form."
+            )
+        else:
+            st.success("Approval eligible: all required findings and evidence checks passed.")
 
     # Reviewer audit-comment form
     if is_reviewer:
-        with st.expander("💬 Add Reviewer Feedback / Audit Note", expanded=False):
+        with st.expander("Add reviewer feedback or audit note", expanded=False):
             with st.form("reviewer_comment_form"):
                 feedback_kind = st.selectbox(
                     "Audit event",
@@ -832,6 +1004,11 @@ def render(role: UserRole | None = None):
                 if st.form_submit_button("Record audit event"):
                     if comment_text.strip():
                         with get_connection() as conn:
+                            from services.brand_service import require_record_brand
+                            require_record_brand(
+                                conn, principal, brand_id, "drafts", draft_id,
+                                roles=(BrandRole.OWNER, BrandRole.REVIEWER),
+                            )
                             review = conn.execute(
                                 "SELECT id FROM reviews WHERE draft_id = ? ORDER BY id DESC LIMIT 1",
                                 (draft_id,),
@@ -843,10 +1020,11 @@ def render(role: UserRole | None = None):
                                 rev_id = review["id"]
                             conn.execute(
                                 "INSERT INTO review_events (review_id, event_type, actor, note) "
-                                "VALUES (?, ?, 'demo_reviewer', ?)",
+                                "VALUES (?, ?, ?, ?)",
                                 (
                                     rev_id,
                                     "OVERRIDE" if feedback_kind == "Document override reason" else "COMMENT",
+                                    principal.username,
                                     comment_text.strip(),
                                 ),
                             )
@@ -868,10 +1046,10 @@ def render(role: UserRole | None = None):
         and is_latest
         and draft_data["status"] == DraftStatus.CHECKED.value
     ):
-        if col_a.button("📬 Submit Draft for Review", type="primary"):
+        if col_a.button("Submit draft for review", type="primary"):
             try:
                 submit_draft_for_review(
-                    draft_id, draft_version_id, "demo_creator", actor_role=role
+                    draft_id, draft_version_id, principal=principal, brand_id=brand_id
                 )
             except (ValueError, PermissionError) as exc:
                 st.error(str(exc))
@@ -881,7 +1059,7 @@ def render(role: UserRole | None = None):
 
     # Approve — Reviewer only
     if is_reviewer and draft_data["status"] == DraftStatus.READY_FOR_REVIEW.value and is_latest:
-        if not open_high and not unlinked_claims:
+        if not open_high and not unlinked_claims and not approval_blockers["errors"]:
             with st.form("approve_draft_form"):
                 approve_note = st.text_input("Approval note", value="Approved — compliance verified against brand guidelines.")
                 not_observed = any(f.get("result") == "NOT_OBSERVED" for f in findings)
@@ -891,14 +1069,15 @@ def render(role: UserRole | None = None):
                         "I acknowledge that one or more AI/metadata checks were NOT_OBSERVED.",
                         key=f"ack_not_observed_{draft_version_id}",
                     )
-                if st.form_submit_button("✅ Approve & Mint Claims to Ledger", type="primary"):
+                if st.form_submit_button("Approve and register claims to ledger", type="primary"):
                     try:
                         claim_count = approve_submitted_draft(
                             draft_id=draft_id,
                             draft_version_id=draft_version_id,
                             reviewer_note=approve_note.strip(),
                             acknowledge_not_observed=acknowledged,
-                            actor_role=role,
+                            principal=principal,
+                            brand_id=brand_id,
                         )
                     except (ValueError, PermissionError) as exc:
                         st.error(str(exc))
@@ -912,12 +1091,12 @@ def render(role: UserRole | None = None):
     if is_reviewer and draft_data["status"] == DraftStatus.READY_FOR_REVIEW.value and is_latest:
         with st.form("request_changes_form"):
             change_note = st.text_area("Request changes — feedback for creator")
-            if st.form_submit_button("🔄 Request Changes"):
+            if st.form_submit_button("Request changes"):
                 if change_note.strip():
                     try:
                         request_draft_changes(
-                            draft_id, draft_version_id, change_note, "demo_reviewer",
-                            actor_role=role,
+                            draft_id, draft_version_id, change_note,
+                            principal=principal, brand_id=brand_id,
                         )
                     except (ValueError, PermissionError) as exc:
                         st.error(str(exc))
