@@ -307,6 +307,37 @@ def test_brand_owner_team_page_exposes_confirmed_ownership_transfer(monkeypatch,
     assert transfer_event == 1
 
 
+def test_brand_owner_can_create_an_additional_brand_from_navigation(monkeypatch, tmp_path):
+    monkeypatch.setenv("DATABASE_PATH", str(tmp_path / "additional-brand-page.sqlite"))
+    apply_schema()
+    create_user("additional-brand-owner", "long-local-password", UserRole.CREATOR)
+    principal = resolve_session(login("additional-brand-owner", "long-local-password"))
+    first_brand = create_brand(principal, "First Brand")
+
+    app = AppTest.from_file(Path(__file__).parents[1] / "app.py").run(timeout=10)
+    app.session_state["brl_session_token"] = principal._session_token
+    app.session_state["active_brand_id"] = first_brand["id"]
+    app.session_state["sidebar_page"] = "Create Brand"
+    app.run(timeout=10)
+
+    assert not app.exception
+    assert any("Create a brand workspace" in item.value for item in app.markdown)
+    next(item for item in app.text_input if item.label == "Brand name").set_value("Second Brand")
+    next(item for item in app.button if item.label == "Create brand").click().run(timeout=10)
+
+    assert not app.exception
+    with get_connection() as conn:
+        brands = conn.execute(
+            "SELECT name FROM brands ORDER BY name"
+        ).fetchall()
+        memberships = conn.execute(
+            "SELECT bm.role FROM brand_memberships bm "
+            "JOIN brands b ON b.id = bm.brand_id WHERE b.name = 'Second Brand'"
+        ).fetchall()
+    assert [row["name"] for row in brands] == ["First Brand", "Second Brand"]
+    assert [row["role"] for row in memberships] == [BrandRole.OWNER.value]
+
+
 def test_brand_owner_audit_page_offers_export_and_local_verification(monkeypatch, tmp_path):
     monkeypatch.setenv("DATABASE_PATH", str(tmp_path / "audit-page.sqlite"))
     apply_schema()

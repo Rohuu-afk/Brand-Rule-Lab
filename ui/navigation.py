@@ -39,7 +39,7 @@ PAGE_GROUPS = {
         "Records": ["Claim Ledger", "Audit & Exports"],
     },
     BrandRole.OWNER: {
-        "Workspace": ["Overview"],
+        "Workspace": ["Overview", "Create Brand"],
         "Reviews": ["New Review", "Review Results", "Review History", "Draft Approvals"],
         "Brand governance": [
             "Brand Knowledge", "Brand Guidelines", "Products & Facts", "Brand Assets",
@@ -58,6 +58,7 @@ PAGES = {
 # Map page labels to module paths
 PAGE_MODULE = {
     "Overview": "ui.pages.overview",
+    "Create Brand": "ui.pages.brand_workspace",
     "Brand Knowledge": "ui.pages.brand_knowledge",
     "Brand Guidelines": "ui.pages.guidelines",
     "Products & Facts": "ui.pages.facts",

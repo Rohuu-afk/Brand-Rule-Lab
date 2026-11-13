@@ -1,4 +1,4 @@
-"""First-use brand workspace onboarding."""
+"""Brand workspace creation and invitation onboarding."""
 
 import streamlit as st
 
@@ -10,10 +10,11 @@ from ui.styles import inject_styles
 
 def render(principal: AuthenticatedPrincipal) -> None:
     inject_styles()
-    page_header("Workspace", "Create your brand workspace")
+    page_header("Workspace", "Create a brand workspace")
     st.write(
         "A brand workspace keeps guidelines, drafts, reviews, assets, claims, and audit "
-        "records separate. The person who creates it becomes its Brand Owner."
+        "records separate. You become its Brand Owner. Existing Brand Owners can create "
+        "additional workspaces for other brands."
     )
     with st.form("create_brand_form"):
         name = st.text_input("Brand name", help="Use the name your team will recognize.")

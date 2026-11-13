@@ -136,6 +136,8 @@ workspaces; the account is inactive until its 24-hour email verification link
 is redeemed. Team members can register only from a one-time, seven-day
 invitation link, which verifies the invited email by possession of the link.
 Owners can invite an email address and choose Creator, Reviewer, or Fact Owner.
+Brand Owners can create additional separate brand workspaces from the **Create
+Brand** item in the workspace navigation.
 Brand Owners can explicitly transfer ownership to an active, verified existing
 member; the current owner remains a member under a chosen non-owner role, and
 the transfer is atomic and recorded in that workspace's audit chain.
