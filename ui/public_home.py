@@ -11,6 +11,7 @@ import streamlit as st
 from db.connection import get_connection, get_db_path
 from services.auth_service import (
     AuthenticationError,
+    authenticate_user,
     create_email_verification_token_for_email,
     create_password_reset_token,
     login,
@@ -21,6 +22,11 @@ from services.auth_service import (
     sso_required,
     get_user,
     verify_email,
+)
+from services.demo_access import (
+    configured_demo_passwords,
+    demo_access_enabled,
+    demo_database_is_isolated,
 )
 from services.brand_service import (
     accept_invitation,
@@ -45,46 +51,42 @@ _DEMO_ROLES = {
 }
 
 
-def _demo_database_is_isolated() -> bool:
-    database_path = get_db_path().resolve()
-    default_path = (
-        Path(__file__).resolve().parents[1] / "data" / "brand_rule_lab.db"
-    ).resolve()
-    return (
-        database_path != default_path
-        and "judge_demo" in database_path.stem.casefold()
-    )
-
-
 def _render_demo_access() -> None:
     st.subheader("Choose a demo role")
     st.caption(
         "Explore preloaded synthetic content. Demo access is enabled only on a "
         "separate judge-demo database."
     )
-    if os.getenv("BRL_DEMO_ACCESS", "").strip().casefold() not in {
-        "1", "true", "yes", "on",
-    }:
+    if not demo_access_enabled():
         st.info("Demo access is not enabled for this deployment.")
         return
-    if not _demo_database_is_isolated():
+    if not demo_database_is_isolated(get_db_path()):
         st.error("Demo access is blocked because this app is not using an isolated judge-demo database.")
         return
     if sso_required():
         st.info("Password-based demo access is unavailable because this deployment requires SSO.")
         return
 
-    available = {
-        label: (username, os.getenv(password_name, ""))
-        for label, (username, password_name) in _DEMO_ROLES.items()
-        if get_user(username) is not None
-        and os.getenv(password_name)
-        and _demo_account_is_scoped(username)
-    }
+    passwords = configured_demo_passwords()
+    available = {}
+    if passwords:
+        for label, (username, _) in _DEMO_ROLES.items():
+            user = get_user(username)
+            password = passwords[username]
+            if (
+                user is not None
+                and user["is_active"]
+                and _demo_account_is_scoped(username)
+            ):
+                try:
+                    authenticate_user(username, password)
+                except AuthenticationError:
+                    continue
+                available[label] = (username, password)
     if not available:
         st.warning(
-            "Demo accounts are not ready. Provision the four synthetic demo users "
-            "and configure their DEMO_*_PASSWORD values."
+            "Demo accounts are not ready. Configure all four synthetic demo "
+            "passwords in this app's secrets and let the isolated demo database initialize."
         )
         return
 
@@ -243,11 +245,15 @@ def _render_initial_owner_registration() -> None:
         )
         if delivered:
             st.success("Account created. Check your email for the verification link before signing in.")
-        elif __import__("os").getenv("ALLOW_DEV_AUTH_LINKS", "0").casefold() in {"1", "true", "yes"}:
+        elif os.getenv("ALLOW_DEV_AUTH_LINKS", "0").casefold() in {"1", "true", "yes"}:
             st.warning("Email is not configured. Local development verification link:")
             st.code(verification_url)
         else:
-            st.warning("Account created, but email delivery is not configured. Contact the administrator to complete verification.")
+            st.warning(
+                "Your account is waiting for email verification, but we couldn't "
+                "send the link. Ask the workspace owner to configure email delivery, "
+                "then use “Resend email verification” before signing in."
+            )
 
 
 def _oidc_identity_data() -> dict | None:

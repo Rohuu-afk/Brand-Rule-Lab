@@ -3,7 +3,7 @@
 import streamlit as st
 
 from services.auth_service import AuthenticatedPrincipal
-from services.brand_service import accept_invitation, create_brand
+from services.brand_service import BrandAccessError, accept_invitation, create_brand
 from ui.components import page_header
 from ui.styles import inject_styles
 
@@ -21,6 +21,11 @@ def render(principal: AuthenticatedPrincipal) -> None:
     if submitted:
         try:
             brand = create_brand(principal, name)
+        except BrandAccessError as exc:
+            st.error(
+                f"{exc} To join a workspace, ask its Brand Owner to invite your "
+                "email address, then sign in with that same email."
+            )
         except (ValueError, PermissionError) as exc:
             st.error(str(exc))
         else:

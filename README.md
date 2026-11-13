@@ -105,6 +105,28 @@ name. Configure the four `DEMO_*_PASSWORD` values on that instance; only this
 synthetic isolated workspace displays those credentials. Never enable public
 demo access on a database containing real workspaces or accounts.
 
+For Streamlit Community Cloud, set the following as top-level app secrets on a
+separate judge-demo deployment; the app reads these settings at startup and
+creates missing synthetic demo accounts in that isolated database:
+
+```toml
+DATABASE_PATH = "data/judge_demo_round3.db"
+BRL_DEMO_ACCESS = "1"
+BRL_REQUIRE_SSO = "0"
+DEMO_CREATOR_PASSWORD = "<unique synthetic password>"
+DEMO_REVIEWER_PASSWORD = "<unique synthetic password>"
+DEMO_FACT_OWNER_PASSWORD = "<unique synthetic password>"
+DEMO_OWNER_PASSWORD = "<unique synthetic password>"
+```
+
+The configured demo usernames and passwords are intentionally displayed on
+the public landing page, so use unique, disposable credentials and never reuse
+them anywhere else. Do not put credentials in the repository or submission
+text. For email verification and team invitations, also configure
+`RESEND_API_KEY`, `EMAIL_FROM`, and `PUBLIC_APP_URL` as app secrets. Email
+sign-in uses the verified address attached to the account; without a working
+mail provider, users cannot complete email verification or receive invitations.
+
 ### Brand workspaces and invitations
 
 After signing in, a user with no memberships sees only the brand onboarding

@@ -59,17 +59,6 @@ def test_isolated_demo_role_login_shows_only_synthetic_configured_account(
     monkeypatch.setenv("DEMO_REVIEWER_PASSWORD", "reviewer-demo-password")
     monkeypatch.setenv("DEMO_FACT_OWNER_PASSWORD", "fact-owner-demo-password")
     monkeypatch.setenv("DEMO_OWNER_PASSWORD", "owner-demo-password")
-    from db.provision_demo_accounts import provision_demo_accounts
-
-    provision_demo_accounts(
-        passwords={
-            "demo_creator": "creator-demo-password",
-            "demo_reviewer": "reviewer-demo-password",
-            "demo_fact_owner": "fact-owner-demo-password",
-            "demo_owner": "owner-demo-password",
-        }
-    )
-
     app = AppTest.from_file(Path(__file__).parents[1] / "app.py").run()
     next(button for button in app.button if button.label == "Open demo").click().run()
 

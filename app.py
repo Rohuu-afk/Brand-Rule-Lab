@@ -22,8 +22,6 @@ logger = logging.getLogger("brand_rule_lab.app")
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 import streamlit as st
-from services.auth_service import AuthenticationError, login_oidc_identity, logout, resolve_session
-from services.brand_service import accept_invitation, list_brands
 
 st.set_page_config(
     page_title="Brand Rule Lab",
@@ -31,6 +29,24 @@ st.set_page_config(
     layout="wide",
     initial_sidebar_state="expanded",
 )
+
+from services.demo_access import (
+    configured_demo_passwords,
+    demo_access_enabled,
+    demo_database_is_isolated,
+    load_streamlit_demo_settings,
+)
+
+try:
+    load_streamlit_demo_settings(st.secrets)
+except Exception as exc:
+    logger.warning(
+        "Streamlit demo configuration could not be loaded (%s)",
+        type(exc).__name__,
+    )
+
+from services.auth_service import AuthenticationError, login_oidc_identity, logout, resolve_session
+from services.brand_service import accept_invitation, list_brands
 
 # Apply schema + seed on initial server startup (seed applies migrations once).
 from db.connection import get_db_path
@@ -42,6 +58,21 @@ def _initialize_database(database_path: str) -> bool:
     if database_path != str(get_db_path().resolve()):
         raise RuntimeError("Database path changed while initialization was starting.")
     seed(force=False, verbose=False)
+    if demo_access_enabled():
+        if not demo_database_is_isolated(database_path):
+            logger.error(
+                "Public demo access is enabled without an isolated judge-demo database."
+            )
+        else:
+            passwords = configured_demo_passwords()
+            if passwords is None:
+                logger.warning(
+                    "Public demo access needs all four synthetic demo passwords."
+                )
+            else:
+                from db.provision_demo_accounts import provision_demo_accounts
+
+                provision_demo_accounts(passwords=passwords)
     return True
 
 
