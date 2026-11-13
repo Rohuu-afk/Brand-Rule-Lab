@@ -34,6 +34,7 @@ def test_public_landing_and_sign_in_entry(monkeypatch, tmp_path):
     assert not app.exception
     assert "Sign in" in [item.value for item in app.subheader]
     assert "Username or email" in [item.label for item in app.text_input]
+    assert any("Ask your Brand Owner to invite your work email" in item.value for item in app.info)
     assert "Send reset link" in [button.label for button in app.button]
 
 
@@ -135,3 +136,40 @@ def test_existing_invitee_can_switch_to_sign_in_without_losing_invitation(
     assert "Sign in with the invited account (already-registered@example.com) to join this workspace." in [
         item.value for item in app.caption
     ]
+
+
+def test_new_invitee_can_choose_configured_sso_or_password_registration(
+    monkeypatch, tmp_path
+):
+    database_path = tmp_path / "new-invitee-sso.sqlite"
+    monkeypatch.setenv("DATABASE_PATH", str(database_path))
+    apply_schema()
+    create_user("workspace-owner", "owner-password-123", UserRole.REVIEWER)
+    owner = resolve_session(login("workspace-owner", "owner-password-123"))
+    brand = create_brand(owner, "New Invite SSO Brand")
+    raw_token = secrets.token_urlsafe(32)
+    expires_at = (datetime.now(timezone.utc) + timedelta(days=1)).strftime(
+        "%Y-%m-%dT%H:%M:%SZ"
+    )
+    with get_connection() as conn:
+        conn.execute(
+            "INSERT INTO brand_invitations "
+            "(brand_id, email, role, token_hash, invited_by_user_id, expires_at) "
+            "VALUES (?, ?, ?, ?, ?, ?)",
+            (
+                brand["id"], "new-invitee@example.com", BrandRole.REVIEWER.value,
+                hashlib.sha256(raw_token.encode("utf-8")).hexdigest(), owner.user_id,
+                expires_at,
+            ),
+        )
+        conn.commit()
+    monkeypatch.setattr("ui.public_home._oidc_configured", lambda: True)
+
+    app = AppTest.from_file(Path(__file__).parents[1] / "app.py").run()
+    app.query_params["invite"] = raw_token
+    app.run()
+
+    assert not app.exception
+    assert "Join your invited workspace" in [item.value for item in app.subheader]
+    assert "Continue with SSO" in [button.label for button in app.button]
+    assert "Create account and join" in [button.label for button in app.button]

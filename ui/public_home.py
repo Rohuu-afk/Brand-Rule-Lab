@@ -146,6 +146,11 @@ def _demo_account_is_scoped(username: str) -> bool:
 def _show_sign_in() -> None:
     st.subheader("Sign in")
     st.caption("Use your work email or username to open your brand workspace.")
+    st.info(
+        "New here? Ask your Brand Owner to invite your work email. Open the "
+        "invitation link to create an account or join an existing account. "
+        "Google sign-in is available when enabled for this app."
+    )
     if _oidc_configured():
         st.button("Continue with SSO", on_click=st.login, type="secondary")
     if sso_required():
@@ -198,6 +203,13 @@ def _render_invitation(token: str) -> None:
         else:
             st.error("SSO is required, but the identity provider is not configured.")
         return
+    if _oidc_configured():
+        st.button(
+            "Continue with SSO",
+            on_click=st.login,
+            type="secondary",
+            key="invitation_sso_sign_in",
+        )
     if st.button("Already have an account? Sign in", key="invitation_sign_in"):
         st.session_state["brl_show_login"] = True
         st.rerun()
