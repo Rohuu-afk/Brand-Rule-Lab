@@ -1,8 +1,8 @@
 # Brand Rule Lab — CodeNexus India 2026 Round 3
 
-**Concise submission handoff:** [Brand Rule Lab Round 3 PDF](../submission/Brand_Rule_Lab_Round3_Submission.pdf). It summarizes the product, known-commitment mapping, validation evidence, and release blockers. It is explicitly a local draft because the current checkout has not been deployed and the previous hosted URL was asleep.
+**Concise submission handoff:** [Brand Rule Lab Round 3 PDF](../submission/Brand_Rule_Lab_Round3_Submission.pdf). It summarizes the product, known-commitment mapping, validation evidence, and release blockers. It remains a draft until the required public project link and PDF link are verified and the team leader submits the form.
 
-**Official timing:** The CodeNexus India event page sets the Round 3 window to end at 10:00 IST on 13 November 2026. That deadline has elapsed. This checkout and this document are post-window work; they must not be presented as an on-time Round 3 submission.
+**Official timing:** The Round 3 submission form states that submissions close at 11:59 pm IST on 13 November 2026, with no late window. Submit all required materials before that deadline.
 
 ## Project overview
 
@@ -235,9 +235,9 @@ RBAC with verifiable audit exports. The official [CodeNexus India event page](ht
 says Round 3 must deliver those named improvements, complete core features,
 resolve major issues, and provide a stable product, final PDF, working link,
 and updated repository. The event page states that its Round 3 submission
-window ended at **10:00 IST on 13 November 2026**, and that missing the deadline
-has no late window; current work is post-window and cannot be submitted as
-timely. The page says rounds are scored out of 100 and that score sheets are
+submission form states that the submission window ends at **11:59 pm IST on
+13 November 2026**, with no late window. The page says rounds are scored out
+of 100 and that score sheets are
 published, but the accessible content contains a detailed Round 1 rubric only
 and separately says judging sheets and comparative breakdowns are not shared.
 No Round 3 point breakdown or original Round 3 presentation was found, so the

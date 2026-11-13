@@ -4,7 +4,7 @@
 > *CodeNexus India 2026 — Round 3 submission*
 > Built by Team **rohitlongesha5** (Rohit Longesha)
 
-> **Event timing:** The official Round 3 window ended at 10:00 IST on 13 November 2026. This checkout is post-window work and cannot be represented as an on-time submission.
+> **Event timing:** The Round 3 submission form says submissions close at 11:59 pm IST on 13 November 2026, with no late window. Confirm that every required link is publicly accessible and submit before the deadline.
 
 Brand Rule Lab is an intelligent brand-governance platform that reviews content before publication and checks it against approved guidelines, facts, and assets. It catches off-brand tone, wrong terminology, unsupported claims, and inaccessible visuals before publishing, explains every finding, preserves creator intent, and keeps every approved claim cryptographically tied to the exact fact version that supports it.
 
